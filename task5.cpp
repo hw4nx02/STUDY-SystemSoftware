@@ -5,6 +5,7 @@
 #include <vector>
 using namespace std;
 
+/** 어셈블러 지시자 */
 vector<string> directive = {"START", "END", "WORD", "BYTE", "RESW", "RESB", "RETURN"};
 
 /**
@@ -183,6 +184,16 @@ public:
     }
 };
 
+string countLineNumber(int index) {
+    string formatted = to_string(index);
+
+    while (formatted.length() < 6) {
+        formatted = "0" + formatted;
+    }
+
+    return formatted;
+}
+
 int main() {
     ReadOptab optab;
 
@@ -204,6 +215,7 @@ int main() {
     
     if (file.is_open()) {
         string line; // 읽어낸 한 줄
+        int index = 0;
         while (getline(file, line)) {
 
             vector<string> tokens; // 각 라인별 토큰들 (공백으로 구분되는 문자열)
@@ -251,7 +263,8 @@ int main() {
                 cout << e.what() << endl;
             }
 
-            lines.emplace_back("", "", label, opcode, operand);
+            lines.emplace_back(countLineNumber(index), "", label, opcode, operand);
+            index++;
         }
 
         cout << "line" << "\t"
