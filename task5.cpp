@@ -2,7 +2,10 @@
 #include <fstream> // 파일 입출력
 #include <sstream> // 문자열 파싱
 #include <string> // 문자열 처리
+#include <vector>
 using namespace std;
+
+vector<string> directive = {"START", "END", "WORD", "BYTE", "RESW", "RESB", "RETURN"};
 
 /**
  * Mnemonic을 찾지 못했을 때 발생하는 에러
@@ -17,12 +20,46 @@ public:
 };
 
 /**
+ * 소스 파일에서 한 라인
+ * line - 행
+ * loc - 주소
+ * label - 레이블
+ * opcode
+ * operand - 피연산자
+ */
+class Line {
+private:
+    string line; // 행
+    string loc; // 주소
+    string label; // 레이블
+    string opcode;
+    string operand; // 피연산자
+
+public:
+    // 생성자
+    Line(const string& line, const string& loc, const string& label, const string& opcode, const string& operand) {
+        this->line = line;
+        this->loc = loc;
+        this->label = label;
+        this->opcode = opcode;
+        this->operand = operand;
+    }
+
+    // getter
+    string getLine() const {return line;}
+    string getLoc() const {return loc;}
+    string getLabel() const {return label;}
+    string getOpcode() const {return opcode;}
+    string getOperand() const {return operand;}
+};
+
+/**
  * OPTAB을 읽고 검색하는 클래스
  */
 class ReadOptab {
 private:
     static const int TABLE_SIZE = 61; // 총 명령어 갯수와 가까운 소수로 설정
-
+    
     /** 
      * 해시 테이블 노드
      */
@@ -74,6 +111,10 @@ private:
     }
 
 public:
+    /**
+     * 소멸자
+     * 메모리 해제
+     */
     ~ReadOptab() {
         for (int i = 0; i < TABLE_SIZE; ++i) {
             Node* curr = hashTab[i];
@@ -99,6 +140,11 @@ public:
             if (n->key == key)
                 return n->value;
         }
+        for (int i = 0; i < directive.size(); i++) {
+            if (directive[i] == key) {
+                return "";
+            }
+        }
 
         throw NotFoundMnemonicException("Mnemonic '" + key + "'은(는) 존재하지 않는 명령어입니다.");
     }
@@ -121,7 +167,7 @@ public:
             if (line.empty()) continue;
 
             // split
-            istringstream iss(line); // line에서 읽은 데이터를 iss가 입력 스트림으로 가지고
+            istringstream iss(line); // line에서 읽은 데이터를 입력 스트림 iss로 변환
             string key, value;
             if (iss >> key >> value) { // iss를 key와 value로 split
                 // 대문자 변환
@@ -140,25 +186,92 @@ public:
 int main() {
     ReadOptab optab;
 
-    // 파일 읽기
+    // OPTAB 읽기
     optab.loadOptab("optab.txt");
 
-    // 입력 받기
-    cout << "\nMnemonic 입력: ";
+    // 사용자로부터 입력 받기
+    cout << "\n입력('프로그램명' '소스파일명' '출력파일명'): ";
     string input;
     getline(cin, input);
 
-    // 공백 제거 및 대문자 변환
-    while (!input.empty() && isspace(input.back())) input.pop_back();
-    while (!input.empty() && isspace(input.front())) input.erase(input.begin());
-    for (auto& ch : input) ch = toupper(ch);
+    istringstream iss(input);
+    string program, srcfile, intfile;
+    iss >> program >> srcfile >> intfile;
 
-    // 검색
-    try {
-        string result = optab.get(input);
-        cout << "OPCODE: " << result << endl;
-    } catch (const exception& e) {
-        cout << e.what() << endl;
+    // 소스 파일 읽기
+    ifstream file(srcfile); // 소스 파일 읽기
+    vector<Line> lines;
+    
+    if (file.is_open()) {
+        string line; // 읽어낸 한 줄
+        while (getline(file, line)) {
+
+            vector<string> tokens; // 각 라인별 토큰들 (공백으로 구분되는 문자열)
+            string token; // 토큰
+            istringstream issLine(line); // 라인을 입력 스트림으로 변환 
+
+            while (issLine >> token) {
+                tokens.push_back(token);
+            }
+
+            string label, operation, operand;
+
+            // 토큰 갯수에 따라 입력 형식 추정
+            if (tokens.size() >= 3) {
+                // label + operation + operand
+                label = tokens[0];
+                operation = tokens[1];
+                
+                operand = "";
+                for (size_t i = 2; i < tokens.size(); i++) {
+                    operand += tokens[i];
+                    if (i != tokens.size() - 1) {
+                        operand += " ";
+                    }
+                }
+            } else if (tokens.size() == 2) {
+                // ___ + operation + operand
+                label = "";
+                operation = tokens[0];
+                operand = tokens[1];
+            } else if (tokens.size() == 1) {
+                // ___ + operation + ___
+                label = "";
+                operation = tokens[0];
+                operand = "";
+            } else {
+                // 빈 문자열
+                label = operation = operand = "";
+            }
+
+            string opcode;
+            try {
+                opcode = optab.get(operation);
+            } catch(const exception& e) {
+                cout << e.what() << endl;
+            }
+
+            lines.emplace_back("", "", label, opcode, operand);
+        }
+
+        cout << "line" << "\t"
+            << "loc" << "\t"
+            << "label" << "\t"
+            << "opcode" << "\t"
+            << "operand" << endl;
+
+        for (int i = 0; i < lines.size(); i++) {
+            cout << lines[i].getLine() << "\t"
+                << lines[i].getLoc() << "\t"
+                << lines[i].getLabel() << "\t"
+                << lines[i].getOpcode() << "\t"
+                << lines[i].getOperand() << endl;
+        }
+        
+        file.close();
+    } else {
+        cout << "Unable to open file";
+        return 1;
     }
 
     return 0;
