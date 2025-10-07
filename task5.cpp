@@ -9,7 +9,7 @@ using namespace std;
 #define START_ADDRESS "000000"
 
 /** 어셈블러 지시자 */
-vector<string> directive = {"START", "END", "WORD", "BYTE", "RESW", "RESB", "RETURN"};
+vector<string> directive = {"START", "END", "WORD", "BYTE", "RESW", "RESB"};
 
 /**
  * Mnemonic을 찾지 못했을 때 발생하는 에러
@@ -243,28 +243,20 @@ string formatNumber(int index) {
     return formatted;
 }
 
-int main() {
-    ReadOptab optab;
-
-    // OPTAB 읽기
-    optab.loadOptab("optab.txt");
-
-    // 사용자로부터 입력 받기
-    cout << "\n입력('프로그램명' '소스파일명' '출력파일명'): ";
-    string input;
-    getline(cin, input);
-
-    istringstream iss(input);
-    string program, srcfile, intfile;
-    iss >> program >> srcfile >> intfile;
-
-    // 소스 파일 읽기
-    ifstream file(srcfile); // 소스 파일 읽기
+/**
+ * 소스 파일 읽어 column 별로 구분 (column: line, loc, label, opcode, operand)
+ * @param srcName 소스 파일 이름
+ * @param optab
+ * @return 구분된 line들의 벡터
+ */
+vector<Line> readSource(const string& srcName, ReadOptab& optab) {
+// 소스 파일 읽기
+    ifstream file(srcName); // 소스 파일 읽기
     vector<Line> lines;
     
     if (file.is_open()) {
         string line; // 읽어낸 한 줄
-        int index = 0;
+        int index = 1;
         while (getline(file, line)) {
 
             vector<string> tokens; // 각 라인별 토큰들 (공백으로 구분되는 문자열)
@@ -291,15 +283,47 @@ int main() {
                     }
                 }
             } else if (tokens.size() == 2) {
-                // ___ + operation + operand
-                label = "";
-                operation = tokens[0];
-                operand = tokens[1];
+                // ___ + operation + operand 혹은 label + operation + ___
+                string first = tokens[0];
+                string second = tokens[1];
+
+                bool firstIsOperation = false;
+
+                // Mnemonic인지 검사
+                try {
+                    optab.get(first); // 만약 optab에 존재한다면 operation
+                    firstIsOperation = true;
+                } catch(const NotFoundMnemonicException& e) { // 만약 optab에 존재하지 않는다면
+                    // 에러 catch 후 firstIsOperation = false 유지
+                }
+                
+                // 어셈블러 지시자인지 검사
+                for (const string& dir : directive) {
+                    if (dir == first) { // 어셈블러 지시자라면
+                        firstIsOperation = true;
+                        break;
+                    }
+                }
+
+                if (firstIsOperation) { // first가 operation이라면 -> ___ operation operand
+                    label = "";
+                    operation = first;
+                    operand = second;                    
+                } else { // first가 operation이 아니라면 -> label operation ___
+                    label = first;
+                    operation = second;
+                    operand = "";
+                }
+
             } else if (tokens.size() == 1) {
                 // ___ + operation + ___
                 label = "";
                 operation = tokens[0];
                 operand = "";
+
+                cout << "label: " + label
+                    << "operation: " + operation
+                    << "operand: " + operand << endl;                     // 제거
             } else {
                 // 빈 문자열
                 label = operation = operand = "";
@@ -308,6 +332,9 @@ int main() {
             string opcode;
             try {
                 opcode = optab.get(operation);
+
+                cout << "operation: " + operation
+                    << "opcode: " + opcode << endl;                             // 제거
             } catch(const exception& e) {
                 cout << e.what() << endl;
             }
@@ -339,13 +366,21 @@ int main() {
         file.close();
     } else {
         cout << "Unable to open file";
-        return 1;
     }
 
-    ofstream outFile(intfile);
+    return lines;
+}
+
+/**
+ * column 별로 구분된 line을 텍스트 파일에 출력
+ * @param outputName 출력될 파일의 이름
+ * @param lines column 별로 구분된 line이 들어간 벡터
+ */
+void outFile(const string& outputName, const vector<Line>& lines) {
+        ofstream outFile(outputName);
     if (!outFile.is_open()) {
         cout << "파일 열기 실패" << endl;
-        return 1;
+        return;
     }
 
     // 헤더
@@ -358,12 +393,33 @@ int main() {
     // 각 행 출력
     for (const auto& line: lines) {
         outFile << left << setw(10) << line.getLine()
-                << setw(10) << line.getLoc()
+                << setw(10) << ("0x" + line.getLoc())
                 << setw(10) << line.getLabel()
                 << setw(10) << line.getOpcode()
                 << setw(10) << line.getOperand() << "\n";
     }
     outFile.close();
+}
+
+int main() {
+    ReadOptab optab;
+
+    // OPTAB 읽기
+    optab.loadOptab("optab.txt");
+
+    // 사용자로부터 입력 받기
+    cout << "\n입력('프로그램명' '소스파일명' '출력파일명'): ";
+    string input;
+    getline(cin, input);
+
+    istringstream iss(input);
+    string program, srcfile, intfile;
+    iss >> program >> srcfile >> intfile; // 프로그램명, 소스파일명, 출력 파일명 구분
+
+    // 소스 파일 읽기
+    vector<Line> lines = readSource(srcfile, optab);
+    // line, loc, label, opcode, operand 구분하여 파일에 출력
+    outFile(intfile, lines);
 
     return 0;
 }
