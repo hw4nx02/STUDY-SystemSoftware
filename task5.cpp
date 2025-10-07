@@ -2,8 +2,11 @@
 #include <fstream> // 파일 입출력
 #include <sstream> // 문자열 파싱
 #include <string> // 문자열 처리
+#include <iomanip> // 포매팅
 #include <vector>
 using namespace std;
+
+#define START_ADDRESS "000000"
 
 /** 어셈블러 지시자 */
 vector<string> directive = {"START", "END", "WORD", "BYTE", "RESW", "RESB", "RETURN"};
@@ -33,15 +36,17 @@ private:
     string line; // 행
     string loc; // 주소
     string label; // 레이블
+    string operation; // 명령어 or 지시자
     string opcode;
     string operand; // 피연산자
 
 public:
     // 생성자
-    Line(const string& line, const string& loc, const string& label, const string& opcode, const string& operand) {
+    Line(const string& line, const string& loc, const string& label, const string& operation, const string& opcode, const string& operand) {
         this->line = line;
         this->loc = loc;
         this->label = label;
+        this->operation = operation;
         this->opcode = opcode;
         this->operand = operand;
     }
@@ -50,8 +55,49 @@ public:
     string getLine() const {return line;}
     string getLoc() const {return loc;}
     string getLabel() const {return label;}
+    string getOperation() const {return operation;}
     string getOpcode() const {return opcode;}
     string getOperand() const {return operand;}
+
+    // setter
+    void setLoc(const string& loc) {this->loc = loc;}
+
+    /**
+     * 명령어의 loc 계산
+     * @param currentLoc 현재 위치. 계산될 명령어 바로 앞의 위치
+     * @param operation 계산될 라인의 명령어. 특히, 어셈블러 지시자
+     * @param operand 계산될 라인의 피연산자
+     */
+    static string calculateNextLoc(const string& currentLoc, const string& operation, const string& operand) {
+        int xLoc = stoi(currentLoc, nullptr, 16); // 현재 loc 16진수 문자열을 10진수 정수형으로
+        int increment = 0; // loc 증가량
+
+        // 지시자 처리
+        if (operation == "START");
+        else if (operation == "WORD") increment = 3; // 한 워드당 3바이트
+        else if (operation == "RESW") increment = 3 * stoi(operand); // operand 크기만큼 워드 할당 -> operand*3 만큼 바이트 할당
+        else if (operation == "RESB") increment = stoi(operand); // operand 크기만큼 바이트 할당
+        else if (operation == "BYTE") { 
+            cout << operand[0] << endl;
+            if (!operand.empty() && operand[0] == 'C') { // operand가 문자열 상수
+                size_t start = operand.find('\'') + 1; // 문자열 상수 형식: C' '
+                size_t end = operand.rfind('\'');
+                increment = (end > start) ? end-start : 0; // 길이 = 문자열 길이
+            } else if (!operand.empty() && operand[0] == 'X') { // operand가 헥사 상수
+                size_t start = operand.find('\'') + 1; // 헥사 상수 형식: X' '
+                size_t end = operand.rfind('\'');
+                increment = (end > start) ? (end-start+1)/2 : 0; // 길이 = 헥사값 길이 / 2 (1바이트가 2개의 헥사값으로 이루어지기 때문)
+            }
+        } else {
+            // 일반 명령어: 기본 3바이트, +로 시작하는 format 4는 4바이트
+            increment = !operation.empty() && operation[0] == '+' ? 4 : 3;
+        }
+
+        xLoc += increment; // loc 증가
+        stringstream ss;
+        ss << uppercase << setw(6) << setfill('0') << hex << xLoc; // 16진수로 변환
+        return ss.str(); // 계산된 loc 반환
+    }
 };
 
 /**
@@ -184,7 +230,10 @@ public:
     }
 };
 
-string countLineNumber(int index) {
+/**
+ * 숫자 포매팅 - 6자리
+ */
+string formatNumber(int index) {
     string formatted = to_string(index);
 
     while (formatted.length() < 6) {
@@ -263,8 +312,14 @@ int main() {
                 cout << e.what() << endl;
             }
 
-            lines.emplace_back(countLineNumber(index), "", label, opcode, operand);
+            lines.emplace_back(formatNumber(index), "", label, operation, opcode, operand);
             index++;
+        }
+
+        string loc = START_ADDRESS; // 시작 주소
+        for (auto& line: lines) {
+            line.setLoc(loc);
+            loc = Line::calculateNextLoc(loc, line.getOperation(), line.getOperand()); // 다음 loc 계산
         }
 
         cout << "line" << "\t"
@@ -275,17 +330,40 @@ int main() {
 
         for (int i = 0; i < lines.size(); i++) {
             cout << lines[i].getLine() << "\t"
-                << lines[i].getLoc() << "\t"
+                << "0x" << lines[i].getLoc() << "\t"
                 << lines[i].getLabel() << "\t"
                 << lines[i].getOpcode() << "\t"
                 << lines[i].getOperand() << endl;
         }
-        
+
         file.close();
     } else {
         cout << "Unable to open file";
         return 1;
     }
+
+    ofstream outFile(intfile);
+    if (!outFile.is_open()) {
+        cout << "파일 열기 실패" << endl;
+        return 1;
+    }
+
+    // 헤더
+    outFile << left << setw(10) << "LINE"
+            << setw(10) << "LOC"
+            << setw(10) << "LABEL"
+            << setw(10) << "OPCODE"
+            << setw(10) << "OPERAND" << "\n";
+    outFile << string(50, '-') << "\n"; // 구분선
+    // 각 행 출력
+    for (const auto& line: lines) {
+        outFile << left << setw(10) << line.getLine()
+                << setw(10) << line.getLoc()
+                << setw(10) << line.getLabel()
+                << setw(10) << line.getOpcode()
+                << setw(10) << line.getOperand() << "\n";
+    }
+    outFile.close();
 
     return 0;
 }
