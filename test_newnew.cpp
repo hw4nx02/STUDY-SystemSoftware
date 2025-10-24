@@ -1,10 +1,3 @@
-// assembler_fixed.cpp
-// SIC/XE 2-pass Assembler (single-file) -- Literal handling fixes
-// - Deduplicate literals by their byte (hex) value
-// - Ensure LTORG assigns addresses at current LOCCTR and increments LOCCTR properly
-// - Other features as previously implemented
-// Compile: g++ -std=c++17 assembler_fixed.cpp -o assembler
-
 #include <bits/stdc++.h>
 using namespace std;
 
@@ -538,14 +531,20 @@ void doPass1(const string &srcFile) {
         if (r.comment) {
             intf << setw(4) << r.lineNo << "    " << r.raw << "\n";
         } else {
-            intf << setw(4) << (r.lineNo>0 ? r.lineNo : 0) << " "   // LTORG 리터럴 lineNo가 0이면 0 출력
-                << setw(6) << hexPad(r.addr,6)                     // 블록 내 LOCCTR 표시
+            intf << setw(4) << (r.lineNo>0 ? r.lineNo : 0) << " "
+                << setw(6) << hexPad(r.addr,6)
                 << " [" << r.block << "] ";
             if (!r.label.empty()) intf << setw(8) << r.label << " ";
             else intf << setw(8) << " " << " ";
             intf << setw(8) << r.opcode;
             if (!r.operand.empty()) intf << " " << r.operand;
-            intf << "    ; " << trim(r.raw) << "\n";
+
+            size_t commentPos = r.raw.find(';');
+            if (commentPos != string::npos) {
+                string comment = trim(r.raw.substr(commentPos));
+                intf << "    " << comment;
+            }
+            intf << "\n";
         }
     }
     intf.close();
@@ -668,6 +667,25 @@ void doPass2(const string &srcFile) {
             else logError(r.lineNo, "BASE operand unresolved: " + operand);
             continue;
         }
+
+        // --- LITERAL 처리 ---
+        if (op == "=LITERAL") {
+        // 이미 PASS1에서 bytes와 addr가 정해져 있음
+            auto mapIt = LITERAL_TOKEN_MAP.find(operand);  // operand = 원본 토큰 (=C'AAA', =X'F1', ...)
+            if (mapIt != LITERAL_TOKEN_MAP.end()) {
+                string hexKey = mapIt->second;
+                auto litIt = LITTAB.find(hexKey);
+                if (litIt != LITTAB.end()) {
+                    // object code로 바이트값 그대로 사용
+                    stringstream ss;
+                    for (auto b : litIt->second.bytes) ss << hex << uppercase << setw(2) << setfill('0') << (int)b;
+                    r.generatedObject = true;
+                    r.objectCode = ss.str();
+                }
+            }
+        continue;
+        }
+
         if (op == "WORD") {
             uint32_t val = 0;
             try { val = (uint32_t)stoul(operand,nullptr,0); } catch(...) { val = 0; }
@@ -927,6 +945,7 @@ void doPass2(const string &srcFile) {
 
 // ----------------------- MAIN -------------------------------------------
 int main(int argc, char** argv) {
+
     ios::sync_with_stdio(false);
     cin.tie(nullptr);
 
@@ -935,7 +954,7 @@ int main(int argc, char** argv) {
     if (argc >= 2) {
         src = argv[1];
     } else {
-        cout << "Enter source filename to assemble: ";
+        cout << "Enter source filename to assemble: " << flush;
         if (!std::getline(cin, src)) { cerr << "No input received. Exiting.\n"; return 1; }
         src = trim(src);
         if (src.empty()) { cerr << "Empty filename provided. Exiting.\n"; return 1; }
