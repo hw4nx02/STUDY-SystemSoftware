@@ -1,40 +1,68 @@
-// assembler.cpp
-// SIC/XE 2-pass assembler — fixes for absolute-symbol direct encoding (no hardcoding).
-// Build: g++ -std=c++17 -O2 -o assembler assembler.cpp
-// Run: ./assembler <source.asm>
-
 #include <bits/stdc++.h>
 using namespace std;
 
 // ---------- utilities ----------
+// 문자열 앞뒤 공백 제거
 static inline string trim(const string &s) {
     size_t a = s.find_first_not_of(" \t\r\n");
     if (a == string::npos) return "";
     size_t b = s.find_last_not_of(" \t\r\n");
     return s.substr(a, b - a + 1);
 }
+// 공백을 기준으로 토큰 분리
 static inline vector<string> split_ws(const string &s) {
-    vector<string> out; istringstream iss(s); string tok; while (iss >> tok) out.push_back(tok); return out;
+    vector<string> out; 
+    istringstream iss(s); 
+    string tok; 
+    while (iss >> tok) out.push_back(tok); 
+    return out;
 }
-static inline string toUpper(const string &s) { string r=s; for (auto &c:r) c=toupper((unsigned char)c); return r; }
-static inline string hexPad(uint64_t v, int width) { stringstream ss; ss<<uppercase<<hex<<setw(width)<<setfill('0')<<v; return ss.str(); }
+// 문자열 대문자로 변환
+static inline string toUpper(const string &s) {
+    string r=s; 
+    for (auto &c:r) c=toupper((unsigned char)c); 
+    return r; 
+}
+// 16진수 주소 width개의 패딩(0) 갖는 문자열로 변환
+static inline string hexPad(uint64_t v, int width) { 
+    stringstream ss; 
+    ss<<uppercase<<hex<<setw(width)<<setfill('0')<<v; 
+    return ss.str(); 
+}
+// 16진수 형식의 정수 반환
 static inline int hexStrToInt(const string &s) {
-    string t=s; if (t.size()>=2 && t[0]=='0' && (t[1]=='x'||t[1]=='X')) t=t.substr(2);
-    int v=0; stringstream ss; ss<<hex<<t; ss>>v; return v;
+    string t=s;
+    if (t.size()>=2 && t[0]=='0' && (t[1]=='x'||t[1]=='X')) t=t.substr(2);
+    int v=0; 
+    stringstream ss; 
+    ss<<hex<<t; 
+    ss>>v; 
+    return v;
 }
+// 숫자 토큰인지 판별
 static inline bool isNumberToken(const string &s) {
     if (s.empty()) return false;
     size_t i=0; if (s[0]=='+'||s[0]=='-') i=1;
     for (; i<s.size(); ++i) if (!isdigit((unsigned char)s[i])) return false;
     return true;
 }
+// 단일 문자 구분자를 기준으로 분리
 static inline vector<string> splitByChar(const string &s, char c) {
-    vector<string> out; string cur; for (char ch: s) { if (ch==c) { out.push_back(cur); cur.clear(); } else cur.push_back(ch); } out.push_back(cur); return out;
+    vector<string> out; 
+    string cur;
+    for (char ch: s) { 
+        if (ch==c) { out.push_back(cur); cur.clear(); } 
+        else cur.push_back(ch); 
+    }
+    out.push_back(cur); 
+    return out;
 }
 
 // ---------- OPTAB ----------
+// 기계 명령어 이름과 그에 대응하는 opcode를 저장
 struct OptEntry { string mnemonic; uint8_t opcode; };
 unordered_map<string, OptEntry> OPTAB;
+// optab.txt에서 optab 읽어서 OPTAB 채움
 bool loadOptab(const string &fname) {
     ifstream ifs(fname); if (!ifs) return false;
     string line;
@@ -52,14 +80,33 @@ bool loadOptab(const string &fname) {
 }
 
 // ---------- CPU formats & registers ----------
+// 레지스터 이름-번호
 unordered_map<string,int> REGNUM = {{"A",0},{"X",1},{"L",2},{"B",3},{"S",4},{"T",5},{"F",6},{"PC",8},{"SW",9}};
+// Format 1, 2에 해당하는 명령어 집합
 unordered_set<string> FORMAT1 = {"FIX","FLOAT","NORM","SIO","HIO","TIO"};
 unordered_set<string> FORMAT2 = {"ADDR","COMPR","CLEAR","TIXR","RMO","SVC","SHIFTL","SHIFTR","MULR","DIVR","SUBR","SSK","TIXR","SVC"};
 
 // ---------- Data structures ----------
+/** 
+ * 심볼 정보 저장 
+ * @param name 심볼 이름
+ * @param addr 심볼의 주소
+ * @param block 소속 블록 이름
+ * @param isAbsolute 절대값 지정 여부
+ */
 struct SymEntry { string name; uint32_t addr; string block; bool isAbsolute; };
-map<string, SymEntry> SYMTAB;
+map<string, SymEntry> SYMTAB; // SYMTAB (레이블 이름, SymEntry)
 
+/**
+ * 리터럴 관리
+ * @param hexKey 바이트 값을 16진수로 변환한 고유 키
+ * @param firstToken 소스에서 최초로 등장한 리터럴 토큰
+ * @param bytes 리터럴의 실제 바이트 배열
+ * @param hasAddr LTORG 또는 END에서 실제 주소 배정 완료 여부
+ * @param block 배치된 블록
+ * @param addr 블록 내 주소
+ * @param firstLineEncounter 리터럴이 처음 등장한 소스 라인 번호
+ */
 struct LitEntry {
     string hexKey;
     string firstToken;
@@ -72,13 +119,16 @@ struct LitEntry {
     LitEntry(): length(0), hasAddr(false), addr(0), firstLineEncounter(INT_MAX) {}
 };
 vector<LitEntry> LIT_LIST;
-unordered_map<string,int> LIT_KEY_TO_IDX;
-unordered_map<string,string> LITERAL_TOKEN_MAP;
+unordered_map<string,int> LIT_KEY_TO_IDX; // 키-인덱스 맵
+unordered_map<string,string> LITERAL_TOKEN_MAP; // 토큰-키 맵
 
+// 프로그램 블록 관리
+// 블록별 LOCCTR를 유지하며 pass1 후 시작 주소 및 길이 계산
 struct Block { string name; uint32_t locctr; uint32_t length; uint32_t startAddr; bool used; };
 vector<string> blockOrder;
 unordered_map<string, Block> BLOCKTAB;
 
+// 소스의 한 줄을 구조화하여 저장
 struct IntLine {
     int lineNo;
     string label;
@@ -93,15 +143,20 @@ struct IntLine {
 };
 vector<IntLine> INTLINES;
 
-uint32_t programStart = 0;
-string programName = "      ";
+uint32_t programStart = 0; // 프로그램 시작 주소
+string programName = "      "; // 프로그램 이름
 string startBlockName = "DEFAULT";
-string END_LABEL = "";
+string END_OPERAND = ""; // END 지시어의 operand
 
 vector<string> ERRORS;
 void logError(int lineNo, const string &msg) { stringstream ss; ss << "Line " << lineNo << ": " << msg; ERRORS.push_back(ss.str()); }
 
-// ---------- parse source ----------
+/**
+ * 소스코드를 행 단위로 읽어 IntLine 리스트를 반환 
+ * 주석(.시작) / 빈 줄 -> comment=true
+ * label 존재 여부 판별: label은 맨 앞에 위치 / 없으면 opcode부터 시작
+ * opcode를 모두 대문자로 변환
+ */
 vector<IntLine> parseSourceFile(const string &fname) {
     vector<IntLine> out;
     ifstream ifs(fname);
@@ -109,7 +164,8 @@ vector<IntLine> parseSourceFile(const string &fname) {
     string raw; int lineno=0;
     while (getline(ifs, raw)) {
         ++lineno;
-        string line = raw; if (!line.empty() && line.back()=='\r') line.pop_back();
+        string line = raw; 
+        if (!line.empty() && line.back()=='\r') line.pop_back();
         IntLine rec; rec.lineNo = lineno; rec.raw = line; rec.comment=false; rec.label=""; rec.opcode=""; rec.operand="";
         string t = trim(line);
         if (t.empty()) { rec.comment=true; out.push_back(rec); continue; }
@@ -134,7 +190,9 @@ vector<IntLine> parseSourceFile(const string &fname) {
     return out;
 }
 
-// ---------- literal helpers ----------
+/**
+ * C'...', X'...', 숫자 문자열 -> 바이트 배열로 변환
+ */
 vector<uint8_t> bytesFromConstant(const string &operand, bool &ok) {
     ok=false; vector<uint8_t> res;
     if (operand.size() == 0) return res;
@@ -156,6 +214,8 @@ vector<uint8_t> bytesFromConstant(const string &operand, bool &ok) {
         } catch(...) { ok=false; return res; }
     }
 }
+// 바이트 배열을 이어붙인 문자열 반환
+// [0x45, 0x4F, 0x46] -> "454F46"
 string bytesToHexKey(const vector<uint8_t> &bytes) {
     stringstream ss; ss<<uppercase<<hex;
     for (auto b: bytes) ss<<setw(2)<<setfill('0')<<(int)b;
@@ -164,8 +224,16 @@ string bytesToHexKey(const vector<uint8_t> &bytes) {
 
 // ---------- Expression evaluator ----------
 struct EvalResult { bool ok; uint32_t value; bool isAbsolute; string err; };
-// See earlier analysis: allow numbers, symbols, '*' and rules for relativity
+/**
+ * EQU, ORG, 등에서 표현식을 평가하여 절대/상대성 계산
+ * +, - 기준으로 표현식 토큰화 -> 각 토큰 평가(상대항, 절대항) -> 상대표현식, 절대표현식 여부 판단
+ * @param expr 표현식 문자열
+ * @param currBlock 현재 블록 이름
+ * @param currLocctr 현재 LOCCTR
+ * @param lineNo 에러 메세지에 사용
+ */
 EvalResult evalExpression(const string &expr, const string &currBlock, uint32_t currLocctr, int lineNo) {
+    // +, - 기준으로 토큰(terms) 분리
     string s = trim(expr);
     if (s.empty()) return {false,0,false,"empty expression"};
     vector<pair<char,string>> terms;
@@ -173,17 +241,28 @@ EvalResult evalExpression(const string &expr, const string &currBlock, uint32_t 
     while (i < s.size()) {
         while (i<s.size() && isspace((unsigned char)s[i])) ++i;
         if (i>=s.size()) break;
-        if (s[i] == '+' || s[i] == '-') { sign = s[i]; ++i; while (i<s.size() && isspace((unsigned char)s[i])) ++i; }
-        size_t j = i; while (j<s.size() && s[j] != '+' && s[j] != '-') ++j;
+        if (s[i] == '+' || s[i] == '-') {
+            sign = s[i]; 
+            ++i; 
+            while (i<s.size() && isspace((unsigned char)s[i])) ++i;
+        }
+        size_t j = i; 
+        while (j<s.size() && s[j] != '+' && s[j] != '-') ++j;
         string token = trim(s.substr(i, j-i));
         if (token.empty()) return {false,0,false,"bad token in expression"};
         terms.push_back({sign, token});
         sign = '+';
         i = j;
     }
+
+    // 각 토큰에 대해
+    // * -> 현재 LOCCTR
+    // 숫자 -> 절대항
+    // 심볼 -> SYMTAB에서 조회
     long long acc = 0;
     int relativeCount = 0;
     vector<pair<char, tuple<uint32_t,bool,string>>> evaluated;
+
     for (auto &p : terms) {
         char sg = p.first; string tok = p.second;
         uint32_t val = 0; bool isAbsTerm = false; string termBlock="";
@@ -199,6 +278,10 @@ EvalResult evalExpression(const string &expr, const string &currBlock, uint32_t 
         evaluated.push_back({sg, make_tuple(val, isAbsTerm, termBlock)});
         if (!isAbsTerm) ++relativeCount;
     }
+
+    // 상대항 개수로 절대식/상대식 판별
+    // 상대항 3개 이상 -> 에러
+    // 상대항 2개일 때 -> 빼기 연산만 허용
     if (relativeCount >= 3) return {false,0,false,"Too many relative terms"};
     if (relativeCount == 2) {
         int idx=0; vector<int> relIdx;
@@ -219,7 +302,9 @@ EvalResult evalExpression(const string &expr, const string &currBlock, uint32_t 
     return {true, (uint32_t)acc, resultAbs, ""};
 }
 
-// ---------- PASS1 ----------
+/**
+ * LIT_LIST의 아직 배치되지 않은 리터럴 중 현재 라인보다 위에 있는 것들을 배치
+ */ 
 void processLiteralPool_upToLine(uint32_t &locctr, const string &currBlock, int currentLine) {
     for (size_t i=0;i<LIT_LIST.size(); ++i) {
         auto &lit = LIT_LIST[i];
@@ -233,7 +318,14 @@ void processLiteralPool_upToLine(uint32_t &locctr, const string &currBlock, int 
     }
 }
 
+// ---------- PASS1 ----------
+/**
+ * 1. 소스 파일 읽어 INTLINES, SYMTAB, LIT_LIST, BLOCKTAB 채움
+ * 2. 블록별 LOCCTR 계산 및 블록 길이 산출
+ * 3. 리터럴 풀 처리 
+ */
 void doPass1(const string &srcFile) {
+    // 전역 초기화
     SYMTAB.clear(); LIT_LIST.clear(); LIT_KEY_TO_IDX.clear(); LITERAL_TOKEN_MAP.clear();
     INTLINES.clear(); BLOCKTAB.clear(); blockOrder.clear(); ERRORS.clear();
     programStart = 0; programName = "      ";
@@ -244,16 +336,28 @@ void doPass1(const string &srcFile) {
     uint32_t locctr = 0;
     bool started = false;
 
-    auto ensureBlock = [&](const string &bname){ string bn = bname.empty()? startBlockName : bname; if (BLOCKTAB.find(bn) == BLOCKTAB.end()) { BLOCKTAB[bn] = Block{bn,0,0,0,true}; blockOrder.push_back(bn);} };
+    auto ensureBlock = [&](const string &bname){ string bn = bname.empty()? startBlockName : bname; 
+        if (BLOCKTAB.find(bn) == BLOCKTAB.end()) { 
+            BLOCKTAB[bn] = Block{bn,0,0,0,true}; 
+            blockOrder.push_back(bn);
+        }
+    };
 
     vector<IntLine> parsed = parseSourceFile(srcFile);
     int lineno=0;
+    // 각 소스 라인에 대해
     for (auto &pline : parsed) {
+        // 기본 INTLINE 레코드 rec 생성
+        // 주석이면 push_back 
         ++lineno;
         IntLine rec = pline; rec.block = currBlock; rec.addr = locctr; rec.generatedObject=false; rec.objectCode="";
         if (rec.comment) { INTLINES.push_back(rec); continue; }
         string op = trim(rec.opcode); string operand = trim(rec.operand);
 
+        /** -------------------------------------------- 어셈블러 지시자 처리 -------------------------------------------- */
+        // START ------------------------
+        // 프로그램 이름과 시작 주소 설정
+        // LOCCTR 초기화
         if (!started && op == "START") {
             started = true;
             programName = rec.label.empty()? "      " : rec.label;
@@ -264,6 +368,9 @@ void doPass1(const string &srcFile) {
             rec.addr = locctr; INTLINES.push_back(rec); continue;
         }
 
+        // USE ------------------------
+        // 현재 블록 locctr 저장
+        // 블록 전환(DEFAULT | operand), 새 블록이면 생성
         if (op == "USE") {
             BLOCKTAB[currBlock].locctr = locctr;
             string newBlock = operand.empty()? startBlockName : operand;
@@ -272,12 +379,15 @@ void doPass1(const string &srcFile) {
             rec.block = currBlock; rec.addr = locctr; INTLINES.push_back(rec); continue;
         }
 
+        // ORG ------------------------
+        // operand의 값으로 현재 LOCCTR를 설정
         if (op == "ORG") {
             rec.addr = locctr;
             if (!operand.empty()) {
                 bool ok=false; uint32_t val=0;
-                if (isNumberToken(operand)) { try { val=(uint32_t)stoul(operand,nullptr,0); ok=true; } catch(...) { ok=false; } }
-                else {
+                if (isNumberToken(operand)) { // operand가 숫자
+                    try { val=(uint32_t)stoul(operand,nullptr,0); ok=true; } catch(...) { ok=false; } }
+                else { // operand가 심볼 또는 표현식
                     auto it = SYMTAB.find(toUpper(operand));
                     if (it != SYMTAB.end()) { val = it->second.addr; ok=true; }
                     else {
@@ -290,20 +400,23 @@ void doPass1(const string &srcFile) {
             INTLINES.push_back(rec); continue;
         }
 
+        // EQU ------------------------
+        // label이 있어야 함. 없으면 에러
+        // label에 대한 값을 매핑하고 SYMTAB에 등록
         if (op == "EQU") {
             if (rec.label.empty()) logError(rec.lineNo, "EQU without label");
             else {
-                if (operand.empty()) {
+                if (operand.empty()) { // operand가 비었으면 -> label의 값을 현재 LOCCTR로 설정
                     SYMTAB[toUpper(rec.label)] = SymEntry{toUpper(rec.label), locctr, currBlock, true};
                 } else {
-                    if (isNumberToken(operand)) {
+                    if (isNumberToken(operand)) { // operand가 숫자면 -> 숫자 값으로 등록 (절대항)
                         uint32_t v = (uint32_t)stoul(operand,nullptr,0);
                         SYMTAB[toUpper(rec.label)] = SymEntry{toUpper(rec.label), v, currBlock, true};
                     } else {
                         auto it = SYMTAB.find(toUpper(operand));
-                        if (it != SYMTAB.end()) {
+                        if (it != SYMTAB.end()) { // operand가 심볼이면 -> 심볼의 값, 절대항 여부 복사
                             SYMTAB[toUpper(rec.label)] = SymEntry{toUpper(rec.label), it->second.addr, it->second.block, it->second.isAbsolute};
-                        } else {
+                        } else { // operand가 표현식이면 -> 평가 후 SYMTAB에 등록
                             auto ev = evalExpression(operand, currBlock, locctr, rec.lineNo);
                             if (ev.ok) SYMTAB[toUpper(rec.label)] = SymEntry{toUpper(rec.label), ev.value, currBlock, ev.isAbsolute};
                             else logError(rec.lineNo, "EQU eval failed: " + operand);
@@ -314,43 +427,60 @@ void doPass1(const string &srcFile) {
             rec.addr = locctr; INTLINES.push_back(rec); continue;
         }
 
+        // LTORG ------------------------
+        // 리터럴 풀 처리 함수 호출
         if (op == "LTORG") {
             rec.addr = locctr; INTLINES.push_back(rec);
             processLiteralPool_upToLine(locctr, currBlock, rec.lineNo);
             BLOCKTAB[currBlock].locctr = locctr; continue;
         }
 
+        // END ------------------------
+        // 리터럴 풀 처리 함
         if (op == "END") {
+            if (!operand.empty()) {
+                END_OPERAND = trim(operand);
+            }
             rec.addr = locctr; INTLINES.push_back(rec);
             processLiteralPool_upToLine(locctr, currBlock, rec.lineNo);
             BLOCKTAB[currBlock].locctr = locctr; break;
-            if (!operand.empty()) {
-                END_LABEL = trim(operand); // store end entry label for pass2
-            }
         }
 
+        // BASE ------------------------
+        // INTLINES에 추가만 함
         if (op == "BASE") { rec.addr = locctr; INTLINES.push_back(rec); continue; }
 
-        if (!rec.label.empty()) {
+        /** -------------------------------------------- label 처리 -------------------------------------------- */
+        if (!rec.label.empty()) { // 레이블이 있다면 SYMTAB에 추가
             string lab = toUpper(rec.label);
             if (SYMTAB.find(lab) != SYMTAB.end()) logError(rec.lineNo, "Duplicate symbol: " + lab);
             else SYMTAB[lab] = SymEntry{lab, locctr, currBlock, false};
         }
 
-        // literal detection
+        /** -------------------------------------------- 리터럴 감지 후 처리 -------------------------------------------- */
         if (!operand.empty()) {
-            string opnd = operand; size_t commaPos = opnd.find(','); if (commaPos!=string::npos) opnd = trim(opnd.substr(0, commaPos));
-            if (!opnd.empty() && opnd[0]=='=') {
+            // 콤마 앞까지 검사해서
+            string opnd = operand;
+            size_t commaPos = opnd.find(','); 
+            if (commaPos!=string::npos) opnd = trim(opnd.substr(0, commaPos));
+
+            if (!opnd.empty() && opnd[0]=='=') { // =으로 시작하면 (리터럴이면)
+                // 16진수 값(hexKey) 생성
+                // 동일 hexKey가 있으면 firstLineEncounter 업데이트 (더 작은 라인번호 유지)
+                //               없으면 새 LitEntry 추가
                 string litToken = opnd;
                 string litVal = litToken.substr(1);
-                bool ok=false; vector<uint8_t> bytes = bytesFromConstant(litVal, ok);
+                bool ok=false; 
+                vector<uint8_t> bytes = bytesFromConstant(litVal, ok);
+                
                 if (!ok) {
                     vector<uint8_t> b; long long v=0; try { v = stoll(litVal); } catch(...) { v=0; }
                     b.push_back((v>>16)&0xFF); b.push_back((v>>8)&0xFF); b.push_back(v&0xFF); bytes = b; ok=true;
                 }
                 string hk = bytesToHexKey(bytes);
                 if (LIT_KEY_TO_IDX.find(hk) == LIT_KEY_TO_IDX.end()) {
-                    LitEntry ent; ent.hexKey = hk; ent.firstToken = litToken; ent.bytes = bytes; ent.length = (uint32_t)bytes.size();
+                    LitEntry ent;
+                    ent.hexKey = hk; ent.firstToken = litToken; ent.bytes = bytes; ent.length = (uint32_t)bytes.size();
                     ent.hasAddr = false; ent.block=""; ent.addr=0; ent.firstLineEncounter = rec.lineNo;
                     LIT_LIST.push_back(ent); LIT_KEY_TO_IDX[hk] = (int)LIT_LIST.size()-1;
                 } else {
@@ -361,11 +491,13 @@ void doPass1(const string &srcFile) {
             }
         }
 
-        // LOCCTR increment
+        /** -------------------------------------------- LOCCTR 처리 -------------------------------------------- */
         uint32_t inc = 0;
         bool isFormat4 = false;
         string opcodeToken = op;
+        // +로 시작하면 -> Format4
         if (!opcodeToken.empty() && opcodeToken[0] == '+') { isFormat4 = true; opcodeToken = opcodeToken.substr(1); }
+        // OPTAB에서 찾은 명령어가 어떤 Format인지 판단 후 길이 결정
         if (OPTAB.find(opcodeToken) != OPTAB.end()) {
             if (isFormat4) inc = 4;
             else {
@@ -374,6 +506,7 @@ void doPass1(const string &srcFile) {
                 else inc = 3;
             }
         } else {
+            // 어셈블러 지시자에 따른 LOCCTR 증분 결정
             if (op == "WORD") inc = 3;
             else if (op == "RESW") { try { int n = stoi(operand); inc = 3U * (uint32_t)n; } catch(...) { inc=0; logError(rec.lineNo,"Invalid RESW"); } }
             else if (op == "RESB") { try { int n = stoi(operand); inc = (uint32_t)n; } catch(...) { inc=0; logError(rec.lineNo,"Invalid RESB"); } }
@@ -388,14 +521,16 @@ void doPass1(const string &srcFile) {
         INTLINES.push_back(rec);
         locctr += inc;
         BLOCKTAB[currBlock].locctr = locctr;
-    } // end parsed
+    }
 
-    // compute block lengths and start addresses
+    // 루프 종료 후
+    // - 각 블록의 길이 계산
+    // - 블록 시작 주소의 절대 주소 값 계산
     for (auto &bn : blockOrder) if (BLOCKTAB.find(bn) != BLOCKTAB.end()) BLOCKTAB[bn].length = BLOCKTAB[bn].locctr;
     uint32_t curAbs = programStart;
     for (auto &bn : blockOrder) { BLOCKTAB[bn].startAddr = curAbs; curAbs += BLOCKTAB[bn].length; }
 
-    // write INTFILE
+    // INTFILE.txt 작성
     ofstream intf("INTFILE.txt");
     for (auto &r : INTLINES) {
         if (r.comment) { intf << setw(4) << r.lineNo << "    " << r.raw << "\n"; continue; }
@@ -409,10 +544,12 @@ void doPass1(const string &srcFile) {
     }
     intf.close();
 
+    // SYMTAB.txt 작성
     ofstream symf("SYMTAB.txt");
     for (auto &p : SYMTAB) symf << p.first << " " << hexPad(p.second.addr,6) << " " << p.second.block << (p.second.isAbsolute?" ABS":"") << "\n";
     symf.close();
 
+    // LITTAB.txt 작성
     ofstream litf("LITTAB.txt");
     for (size_t i=0;i<LIT_LIST.size(); ++i) {
         auto &le = LIT_LIST[i];
@@ -425,19 +562,31 @@ void doPass1(const string &srcFile) {
 }
 
 // ---------- PASS2 helpers ----------
+/**
+ * 심볼 또는 숫자 문자열에 대한 절대 주소 반환
+ */
 uint32_t computeAbsAddrSymbol(const string &sym, bool &ok) {
     ok = false;
     auto it = SYMTAB.find(toUpper(sym));
-    if (it != SYMTAB.end()) {
+    if (it != SYMTAB.end()) { // SYMTAB에 심볼이 있으면,
+        // 블록 시작 주소 + addr한 절대 주소 반환
         if (BLOCKTAB.find(it->second.block) == BLOCKTAB.end()) return 0;
         ok = true;
-        if (it->second.isAbsolute) return it->second.addr; // absolute stored value
+        if (it->second.isAbsolute) return it->second.addr;
         return BLOCKTAB[it->second.block].startAddr + it->second.addr;
     }
     try { uint32_t v = (uint32_t)stoul(sym,nullptr,0); ok=true; return v; } catch(...) { ok=false; return 0; }
 }
-string buildFormat1(uint8_t opcode) { stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)opcode; return ss.str(); }
-string buildFormat2(uint8_t opcode, int r1, int r2) { uint8_t b0 = opcode; uint8_t b1 = ((r1&0xF)<<4) | (r2 & 0xF); stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)b0<<setw(2)<<(int)b1; return ss.str(); }
+/** Format별 object code 문자열 조립 메서드들 */
+string buildFormat1(uint8_t opcode) {
+    stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)opcode; 
+    return ss.str(); 
+}
+string buildFormat2(uint8_t opcode, int r1, int r2) { 
+    uint8_t b0 = opcode; uint8_t b1 = ((r1&0xF)<<4) | (r2 & 0xF); 
+    stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)b0<<setw(2)<<(int)b1; 
+    return ss.str(); 
+}
 string buildFormat34(uint8_t opcode, bool n,bool i,bool x,bool b,bool p,bool e,uint32_t disp_or_addr) {
     uint8_t byte0 = (opcode & 0xFC) | ( ((n?1:0)<<1) | (i?1:0) );
     if (!e) {
@@ -445,16 +594,21 @@ string buildFormat34(uint8_t opcode, bool n,bool i,bool x,bool b,bool p,bool e,u
         uint8_t flags = ((x?1:0)<<3) | ((b?1:0)<<2) | ((p?1:0)<<1) | (e?1:0);
         uint8_t byte1 = (flags << 4) | ((disp12 >> 8) & 0x0F);
         uint8_t byte2 = disp12 & 0xFF;
-        stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)byte0<<setw(2)<<(int)byte1<<setw(2)<<(int)byte2; return ss.str();
+        stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)byte0<<setw(2)<<(int)byte1<<setw(2)<<(int)byte2; 
+        return ss.str();
     } else {
         uint32_t addr20 = disp_or_addr & 0xFFFFF;
         uint8_t flags = ((x?1:0)<<3) | ((b?1:0)<<2) | ((p?1:0)<<1) | (e?1:0);
         uint8_t byte1 = (flags << 4) | ((addr20 >> 16) & 0x0F);
         uint8_t byte2 = (addr20 >> 8) & 0xFF;
         uint8_t byte3 = addr20 & 0xFF;
-        stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)byte0<<setw(2)<<(int)byte1<<setw(2)<<(int)byte2<<setw(2)<<(int)byte3; return ss.str();
+        stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)byte0<<setw(2)<<(int)byte1<<setw(2)<<(int)byte2<<setw(2)<<(int)byte3; 
+        return ss.str();
     }
 }
+/**
+ * 헥사 문자열을 바이트 벡터로 변환
+ */
 vector<uint8_t> hexStrToBytes(const string &hexs) {
     vector<uint8_t> out;
     for (size_t i=0;i+1<hexs.size(); i+=2) {
@@ -466,8 +620,14 @@ vector<uint8_t> hexStrToBytes(const string &hexs) {
 }
 
 // ---------- PASS2 ----------
+/**
+ * INTLINES, SYMTAB, LIT_LIST, BLOCKTAB을 사용하여
+ * 1. 각 라인별 object code 생성
+ * 2. M 레코드 생성
+ * 3. OBJFILE 생성
+ */
 void doPass2(const string &srcFile) {
-    // assign block start addresses sequentially
+    // 초기화
     uint32_t curAddr = programStart;
     for (auto &bn : blockOrder) {
         BLOCKTAB[bn].startAddr = curAddr;
@@ -475,51 +635,94 @@ void doPass2(const string &srcFile) {
     }
     uint32_t programLength = curAddr - programStart;
 
-    // track base register state as we iterate INTLINES
+    // base 지시자 사용 여부 추적
     bool baseOn = false;
     uint32_t baseValue = 0;
 
-    // generate object codes per INTLINE sequentially (so BASE updates are in-order)
+    // 헬퍼 람다
+    auto bytesToHexString = [&](const vector<uint8_t> &bytes) -> string {
+        stringstream ss;
+        ss << uppercase << hex;
+        for (auto b : bytes) ss << setw(2) << setfill('0') << (int)b;
+        return ss.str();
+    };
+
+    auto appendBytesToBlockMap = [&](unordered_map<string, map<uint32_t,uint8_t>> &bbmap,
+                                     const string &block, uint32_t absAddr,
+                                     const vector<uint8_t> &bytes, int lineNo) {
+        auto &m = bbmap[block]; // ordered map for addresses
+        for (size_t i = 0; i < bytes.size(); ++i) {
+            uint32_t a = absAddr + (uint32_t)i;
+            if (m.find(a) != m.end()) {
+                logError(lineNo, "Byte overlap at address " + hexPad(a,6) + " in block " + block);
+            }
+            m[a] = bytes[i];
+        }
+    };
+
+    // INTLINES 순회 -> object code 생성
     for (auto &r : INTLINES) {
         r.generatedObject = false; r.objectCode = "";
+        
+        // 주석 및 START, END, LTORG, USE, ORG, EQU, RESW, RESB는 스킵 -> object code 생성 X
         if (r.comment) continue;
         string op = toUpper(r.opcode);
         string operand = trim(r.operand);
 
-        if (op=="START" || op=="END" || op=="LTORG" || op=="USE" || op=="ORG" || op=="EQU") continue;
+        if (op=="START" || op=="END" || op=="LTORG" || op=="USE" || op=="ORG" || op=="EQU" || op == "RESW" || op == "RESB") continue;
 
+        // BASE --------------------------------
+        // operand 있으면 base 설정
         if (op == "BASE") {
             if (!operand.empty()) {
-                bool ok=false; uint32_t a = computeAbsAddrSymbol(operand, ok);
-                if (ok) { baseOn = true; baseValue = a; } else { logError(r.lineNo, "BASE unresolved: "+operand); baseOn=false; }
+                bool ok=false;
+                uint32_t a = computeAbsAddrSymbol(operand, ok);
+                if (ok) { baseOn = true; baseValue = a; } 
+                else { logError(r.lineNo, "BASE unresolved: "+operand); baseOn=false; }
             } else { baseOn = false; }
             continue;
         }
 
+        // 리터럴 --------------------------------
+        // object code에 리터럴의 16진수 값 넣음
         if (op == "=LITERAL") {
             string tok = operand;
             if (LITERAL_TOKEN_MAP.find(tok) != LITERAL_TOKEN_MAP.end()) {
                 string hk = LITERAL_TOKEN_MAP[tok];
                 int idx = LIT_KEY_TO_IDX[hk];
-                stringstream ss; for (auto b : LIT_LIST[idx].bytes) ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)b;
-                r.objectCode = ss.str(); r.generatedObject=true;
+                r.objectCode = bytesToHexString(LIT_LIST[idx].bytes);
+                r.generatedObject = true;
             } else logError(r.lineNo, "Unknown literal token in pass2: "+tok);
             continue;
         }
 
+        // WORD --------------------------------
+        // 3바이트 (6자리로) 저장
         if (op == "WORD") {
             uint32_t v=0;
             if (!operand.empty()) {
                 if (isNumberToken(operand)) v=(uint32_t)stoul(operand,nullptr,0);
-                else { bool ok=false; uint32_t a = computeAbsAddrSymbol(operand, ok); if (ok) v=a; else logError(r.lineNo,"WORD unresolved: "+operand); }
+                else { 
+                    bool ok=false; uint32_t a = computeAbsAddrSymbol(operand, ok); 
+                    if (ok) v=a; 
+                    else logError(r.lineNo,"WORD unresolved: "+operand); 
+                }
             }
-            r.objectCode = hexPad(v,6); r.generatedObject = true; continue;
+            r.objectCode = hexPad(v,6); r.generatedObject = true; 
+            continue;
         }
+
+        // BYTE --------------------------------
+        // C'...' -> 각 문자를 16진수로
+        // X'...' -> 내부 문자열 그대로 사용
+        // 그 외 숫자 -> 1바이트로 패딩해서 저장
         if (op == "BYTE") {
             if (operand.size()>=3 && (operand[0]=='C'||operand[0]=='c') && operand[1]=='\'' && operand.back()=='\'') {
                 string inner = operand.substr(2, operand.size()-3);
-                stringstream ss; for (char c : inner) ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)((unsigned char)c);
-                r.objectCode = ss.str(); r.generatedObject=true;
+                vector<uint8_t> tmp;
+                for (char c : inner) tmp.push_back((uint8_t)((unsigned char)c));
+                r.objectCode = bytesToHexString(tmp);
+                r.generatedObject = true;
             } else if (operand.size()>=3 && (operand[0]=='X'||operand[0]=='x') && operand[1]=='\'' && operand.back()=='\'') {
                 string inner = operand.substr(2, operand.size()-3);
                 r.objectCode = toUpper(inner); r.generatedObject=true;
@@ -529,44 +732,70 @@ void doPass2(const string &srcFile) {
             }
             continue;
         }
-        if (op == "RESW" || op == "RESB") continue;
 
+        // 기계 명령어 --------------------------------
         bool isFormat4 = false;
         string opClean = op;
+
+        // Format 4
         if (!opClean.empty() && opClean[0] == '+') { isFormat4 = true; opClean = opClean.substr(1); }
+        // OPTAB에서 opcode 검색 
         if (OPTAB.find(opClean) == OPTAB.end()) { logError(r.lineNo, "Undefined opcode: " + opClean); continue; }
         uint8_t opcode = OPTAB[opClean].opcode;
 
-        if (FORMAT1.find(opClean) != FORMAT1.end()) { r.objectCode = buildFormat1(opcode); r.generatedObject=true; continue; }
+        // Format1 명령어
+        if (FORMAT1.find(opClean) != FORMAT1.end()) { 
+            r.objectCode = buildFormat1(opcode); r.generatedObject=true; 
+            continue; 
+        }
+        // Format2 명령어
         if (FORMAT2.find(opClean) != FORMAT2.end()) {
             int r1=-1,r2=0;
             if (!operand.empty()) {
                 auto parts = splitByChar(operand, ',');
-                if (parts.size()>=1) { string p1 = trim(parts[0]); if (REGNUM.find(toUpper(p1)) != REGNUM.end()) r1 = REGNUM[toUpper(p1)]; else { try { r1 = stoi(p1);} catch(...) { r1=0; } } }
-                if (parts.size()>=2) { string p2 = trim(parts[1]); if (REGNUM.find(toUpper(p2)) != REGNUM.end()) r2 = REGNUM[toUpper(p2)]; else { try { r2 = stoi(p2);} catch(...) { r2=0; } } }
+                if (parts.size()>=1) { 
+                    string p1 = trim(parts[0]); 
+                    if (REGNUM.find(toUpper(p1)) != REGNUM.end()) r1 = REGNUM[toUpper(p1)]; 
+                    else { try { r1 = stoi(p1);} catch(...) { r1=0; } } 
+                }
+                if (parts.size()>=2) { 
+                    string p2 = trim(parts[1]); 
+                    if (REGNUM.find(toUpper(p2)) != REGNUM.end()) r2 = REGNUM[toUpper(p2)]; 
+                    else { try { r2 = stoi(p2);} catch(...) { r2=0; } } 
+                }
             }
             r.objectCode = buildFormat2(opcode, r1, r2); r.generatedObject=true; continue;
         }
 
-        // format 3/4
+        // Format 3/4
         bool n=false,i=false,x=false,b=false,p=false,e=false;
         string oper = operand;
-        if (!oper.empty() && oper[0] == '#') { i=true; n=false; oper = oper.substr(1); }
-        else if (!oper.empty() && oper[0] == '@') { n=true; i=false; oper = oper.substr(1); }
-        else { n=true; i=true; }
+        // n, i bit 설정
+        if (!oper.empty() && oper[0] == '#') { // immediate addressing 
+            i=true; n=false; oper = oper.substr(1); 
+        }
+        else if (!oper.empty() && oper[0] == '@') { // indirect addressing
+            n=true; i=false; oper = oper.substr(1); 
+        }
+        else { n=true; i=true; } // 그 외 simple addressing
+
         string operNoIndex = oper;
         if (!operNoIndex.empty()) {
             size_t comma = operNoIndex.find(',');
-            if (comma != string::npos) {
+            if (comma != string::npos) { // index addressing 검사 -> x bit 설정
                 string after = trim(operNoIndex.substr(comma+1));
                 if (toUpper(after) == "X") { x=true; operNoIndex = trim(operNoIndex.substr(0, comma)); }
             }
         }
+
+        // e bit 설정
         if (isFormat4) e = true;
 
+        // disp가 12비트를 초과하면 자동으로 Format4 변환하여 e=true로 설정
         bool immediateNumeric = false; uint32_t immediateValue = 0;
         if (i && !operNoIndex.empty() && isNumberToken(operNoIndex)) {
-            try { immediateValue = (uint32_t)stoul(operNoIndex,nullptr,0); immediateNumeric=true; } catch(...) { immediateNumeric=false; }
+            try { immediateValue = (uint32_t)stoul(operNoIndex,nullptr,0); immediateNumeric=true; } 
+            catch(...) { immediateNumeric=false; }
         }
         if (immediateNumeric && !operNoIndex.empty()) {
             if (!isFormat4 && immediateValue > 0xFFF) { isFormat4 = true; e = true; }
@@ -577,6 +806,8 @@ void doPass2(const string &srcFile) {
         bool operandIsLiteral = (!operNoIndex.empty() && operNoIndex[0] == '=');
         uint32_t targetAbs = 0; bool okTarget=false; bool targetIsAbsoluteSymbol=false;
         if (operandIsLiteral) {
+            // 리터럴 처리
+            // LITERAL_TOKEN_MAP을 통해 절대 주소 얻음
             string litTok = operNoIndex;
             if (LITERAL_TOKEN_MAP.find(litTok) != LITERAL_TOKEN_MAP.end()) {
                 string hk = LITERAL_TOKEN_MAP[litTok];
@@ -585,29 +816,29 @@ void doPass2(const string &srcFile) {
                 else { logError(r.lineNo, "Literal not placed yet: " + litTok); okTarget=false; }
             } else { logError(r.lineNo, "Literal token unknown: " + litTok); okTarget=false; }
         } else if (!operNoIndex.empty()) {
-            // check SYMTAB first to get isAbsolute info
+            // SYMTAB 조회해서 절대항 여부 확인
             auto it = SYMTAB.find(toUpper(operNoIndex));
             if (it != SYMTAB.end()) {
                 if (it->second.isAbsolute) { targetIsAbsoluteSymbol = true; targetAbs = it->second.addr; okTarget=true; }
                 else { targetIsAbsoluteSymbol = false; targetAbs = BLOCKTAB[it->second.block].startAddr + it->second.addr; okTarget=true; }
-            } else {
-                // maybe numeric literal like '123' (should have been caught earlier), or undefined
+            } else { // 숫자 리터럴
                 bool ok=false; uint32_t a = computeAbsAddrSymbol(operNoIndex, ok);
                 if (ok) { targetAbs = a; okTarget=true; targetIsAbsoluteSymbol = true; } else { okTarget=false; }
             }
         } else okTarget=false;
 
+        // RSUB 처리
+        // RSUB 사용하고 operand 비어 있으면 -> n=1, i=1로 0x4F0000 같은 형식으로 생성
         if (!okTarget && !(opClean == "RSUB")) { logError(r.lineNo, "Undefined operand: " + operNoIndex); continue; }
-
         if (opClean == "RSUB") {
             r.objectCode = buildFormat34(opcode, true, true, false, false, false, false, 0);
             r.generatedObject=true; continue;
         }
 
-        uint32_t instrAbs = BLOCKTAB[r.block].startAddr + r.addr;
+        // 상대 주소 계산
+        uint32_t instrAbs = BLOCKTAB[r.block].startAddr + r.addr; // 해당 명령어의 절대 주소
         int instrLen = isFormat4 ? 4 : 3;
 
-        // If operand is a symbol and it's absolute in SYMTAB, prefer direct 12-bit encoding (p=b=0) if it fits.
         if (!isFormat4 && okTarget && !operandIsLiteral && (!immediateNumeric) && targetIsAbsoluteSymbol) {
             if (targetAbs <= 0xFFF) {
                 p = false; b = false;
@@ -615,20 +846,21 @@ void doPass2(const string &srcFile) {
                 r.generatedObject = true;
                 continue;
             } else {
-                // too big -> fall through to format4
+                // 너무 크면 Format 4로
                 isFormat4 = true; e = true; instrLen = 4;
             }
         }
 
-        if (!isFormat4) {
+        if (!isFormat4) { // Format3일 때
+            // 우선적으로 PC-relative 시도
             int32_t disp = (int32_t)targetAbs - (int32_t)(instrAbs + 3);
             if (disp >= -2048 && disp <= 2047) {
                 p = true; b = false;
                 uint32_t disp12 = (uint32_t)(disp & 0xFFF);
                 r.objectCode = buildFormat34(opcode, n, i, x, b, p, false, disp12);
                 r.generatedObject = true; continue;
-            } else {
-                if (baseOn) {
+            } else { // PC-relative 범위에 맞지 않으면
+                if (baseOn) { // baseOn 켜져 있는지 확인하고 Base-relative 시도
                     int32_t dispb = (int32_t)targetAbs - (int32_t)baseValue;
                     if (dispb >= 0 && dispb <= 4095) {
                         b = true; p = false;
@@ -638,57 +870,46 @@ void doPass2(const string &srcFile) {
                     } else {
                         isFormat4 = true; e = true; instrLen = 4;
                     }
-                } else {
+                } else { // 둘 다 실패하면 Format 4로 전환
                     isFormat4 = true; e = true; instrLen = 4;
                 }
             }
         }
 
-        if (isFormat4) {
+        if (isFormat4) { // Format 4이면 그에 맞는 형식으로 object code 생성
             r.objectCode = buildFormat34(opcode, n, i, x, false, false, true, targetAbs);
-            r.generatedObject = true; continue;
+            r.generatedObject = true; continue; // object code 생성 여부 저장
         }
-    } // end INTLINES
+    }
 
-    // Build per-block address->byte map
+    // 블록 바이트 맵 생성
+    // 블록 별로 메모리 주소와 그 주소에 들어 있는 바이트를 모두 저장한 맵
     unordered_map<string, map<uint32_t,uint8_t>> blockByteMap;
+    vector<pair<uint32_t,int>> MRECS;
+
     for (auto &r : INTLINES) {
         if (r.generatedObject && !r.objectCode.empty()) {
             uint32_t abs = BLOCKTAB[r.block].startAddr + r.addr;
             auto bytes = hexStrToBytes(r.objectCode);
-            for (size_t i=0;i<bytes.size(); ++i) {
-                uint32_t a = abs + (uint32_t)i;
-                auto &m = blockByteMap[r.block];
-                if (m.find(a) != m.end()) {
-                    logError(r.lineNo, "Byte overlap at address " + hexPad(a,6) + " in block " + r.block);
-                }
-                m[a] = bytes[i];
+            appendBytesToBlockMap(blockByteMap, r.block, abs, bytes, r.lineNo);
+            // Format 4인 경우
+            // 해당 명령의 절대 주소를 기준으로
+            // M 레코드 작성
+            if (r.objectCode.size() == 8) {
+                MRECS.push_back({abs+1, 5});
             }
         }
     }
-    // add literal bytes
+
+    // 리터럴 바이트들도 블록 바이트 맵에 추가
     for (size_t i=0;i<LIT_LIST.size(); ++i) {
         auto &lit = LIT_LIST[i];
         if (!lit.hasAddr) continue;
         uint32_t abs = BLOCKTAB[lit.block].startAddr + lit.addr;
-        auto &m = blockByteMap[lit.block];
-        for (size_t j=0;j<lit.bytes.size(); ++j) {
-            uint32_t a = abs + (uint32_t)j;
-            if (m.find(a) != m.end()) logError(0, "Literal overlap at " + hexPad(a,6));
-            m[a] = lit.bytes[j];
-        }
+        appendBytesToBlockMap(blockByteMap, lit.block, abs, lit.bytes, 0);
     }
 
-    // Build M records list (format4 entries)
-    vector<pair<uint32_t,int>> MRECS;
-    for (auto &r : INTLINES) {
-        if (r.generatedObject && r.objectCode.size() == 8) {
-            uint32_t abs = BLOCKTAB[r.block].startAddr + r.addr;
-            MRECS.push_back({abs+1, 5});
-        }
-    }
-
-    // Write OBJ file
+    // OBJFILE 생성
     ofstream objf("OBJFILE.obj");
     string pname = programName; if (pname.size() > 6) pname = pname.substr(0,6); else pname += string(6 - pname.size(), ' ');
     objf << "H" << pname << hexPad(programStart,6) << hexPad(programLength,6) << "\n";
@@ -722,10 +943,10 @@ void doPass2(const string &srcFile) {
     }
 
     uint32_t entryAddr = programStart;
-    if (!END_LABEL.empty()) {
-        bool ok=false; uint32_t a = computeAbsAddrSymbol(END_LABEL, ok);
+    if (!END_OPERAND.empty()) {
+        bool ok=false; uint32_t a = computeAbsAddrSymbol(END_OPERAND, ok);
         if (ok) entryAddr = a;
-        else logError(0, "END entry symbol unresolved: " + END_LABEL);
+        else logError(0, "END entry symbol unresolved: " + END_OPERAND);
     }
     objf << "E" << hexPad(entryAddr,6) << "\n";
     cout << "E" << hexPad(entryAddr,6) << "\n";
@@ -745,13 +966,26 @@ void doPass2(const string &srcFile) {
 int main(int argc, char** argv) {
     ios::sync_with_stdio(false);
     cin.tie(nullptr);
-    cout << "SIC/XE 2-pass assembler (fixed absolute-symbol direct encoding)\n";
+
+    cout << "\nSIC/XE 2-pass assembler\n";
     string src;
     if (argc >= 2) src = argv[1];
-    else { cout << "Enter source filename: " << flush; if (!getline(cin, src)) { cerr << "No input\n"; return 1; } src = trim(src); if (src.empty()) { cerr << "Empty filename\n"; return 1; } }
+    else { 
+        cout << "Enter source filename: " << flush; 
+        if (!getline(cin, src)) { cerr << "No input\n"; return 1; } 
+        src = trim(src); 
+        if (src.empty()) { cerr << "Empty filename\n"; return 1; } 
+    }
+
     if (!loadOptab("optab.txt")) { cerr << "Failed to load optab.txt\n"; return 2; }
-    BLOCKTAB.clear(); blockOrder.clear(); BLOCKTAB[startBlockName] = Block{startBlockName,0,0,0,true}; blockOrder.push_back(startBlockName);
+    
+    BLOCKTAB.clear(); 
+    blockOrder.clear(); 
+    BLOCKTAB[startBlockName] = Block{startBlockName,0,0,0,true}; 
+    blockOrder.push_back(startBlockName);
+    
     doPass1(src);
     doPass2(src);
+    
     return 0;
 }
