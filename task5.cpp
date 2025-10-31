@@ -77,8 +77,7 @@ public:
         else if (operation == "WORD") increment = 3; // 한 워드당 3바이트
         else if (operation == "RESW") increment = 3 * stoi(operand); // operand 크기만큼 워드 할당 -> operand*3 만큼 바이트 할당
         else if (operation == "RESB") increment = stoi(operand); // operand 크기만큼 바이트 할당
-        else if (operation == "BYTE") { 
-            cout << operand[0] << endl;
+        else if (operation == "BYTE") {
             if (!operand.empty() && operand[0] == 'C') { // operand가 문자열 상수
                 size_t start = operand.find('\'') + 1; // 문자열 상수 형식: C' '
                 size_t end = operand.rfind('\'');
@@ -205,7 +204,7 @@ public:
     void loadOptab(const string& filename) {
         ifstream file(filename);
         if (!file.is_open()) {
-            cerr << "파일 열기 실패: " << filename << endl;
+            cerr << "OPTAB 읽기 실패: " << filename << endl;
             return;
         }
 
@@ -320,10 +319,6 @@ vector<Line> readSource(const string& srcName, ReadOptab& optab) {
                 label = "";
                 operation = tokens[0];
                 operand = "";
-
-                cout << "label: " + label
-                    << "operation: " + operation
-                    << "operand: " + operand << endl;                     // 제거
             } else {
                 // 빈 문자열
                 label = operation = operand = "";
@@ -332,9 +327,6 @@ vector<Line> readSource(const string& srcName, ReadOptab& optab) {
             string opcode;
             try {
                 opcode = optab.get(operation);
-
-                cout << "operation: " + operation
-                    << "opcode: " + opcode << endl;                             // 제거
             } catch(const exception& e) {
                 cout << e.what() << endl;
             }
@@ -357,7 +349,7 @@ vector<Line> readSource(const string& srcName, ReadOptab& optab) {
 
         for (int i = 0; i < lines.size(); i++) {
             cout << lines[i].getLine() << "\t"
-                << "0x" << lines[i].getLoc() << "\t"
+                << lines[i].getLoc() << "\t"
                 << lines[i].getLabel() << "\t"
                 << lines[i].getOpcode() << "\t"
                 << lines[i].getOperand() << endl;
@@ -365,7 +357,7 @@ vector<Line> readSource(const string& srcName, ReadOptab& optab) {
 
         file.close();
     } else {
-        cout << "Unable to open file";
+        cout << "소스 파일 읽기 실패";
     }
 
     return lines;

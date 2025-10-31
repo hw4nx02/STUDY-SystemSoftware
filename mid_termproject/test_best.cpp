@@ -1,24 +1,3 @@
-/*
-SIC/XE 2-pass assembler (initial implementation)
-Single-file C++ modular layout. This implementation focuses on Pass1 (parsing, OPTAB load,
-SYMTAB/LITTAB creation, LOCCTR, program blocks, intermediate file generation) and
-provides a Pass2 skeleton for object generation.
-
-Files produced by program:
- - SYMTAB.txt  : symbol table from Pass1
- - INTFILE     : intermediate file with addresses, block, and original lines
- - OBJFILE     : object output from Pass2 (partial implementation)
-
-Usage: ./assembler <sourcefile>
-Requires: optab.txt in working directory (mnemonic opcode per line: "ADD 18")
-
-NOTE: This is a first working baseline. Some SIC/XE features (full format-4 relocation,
-BASE/PC-relative selection, complex expression evaluation in EQU, full literal evaluation)
-are implemented only in a simplified way. See comments in code for TODOS.
-
-Author: ChatGPT (as requested)
-*/
-
 #include <bits/stdc++.h>
 using namespace std;
 

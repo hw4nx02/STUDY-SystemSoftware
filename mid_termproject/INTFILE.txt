@@ -1,0 +1,67 @@
+   1 000003 [DEFAULT]    FIRST    START 3
+   2 000003 [DEFAULT]     MAIN      LDA #0
+   3 000006 [DEFAULT]               LDX #0
+   4 000009 [DEFAULT]               LDS #0
+   5 00000C [DEFAULT]               LDT #0
+   6 00000F [DEFAULT]               LDB #0
+   7 000012 [DEFAULT]              JSUB ADDR
+   8 000015 [DEFAULT]              JSUB RTOR
+   9 000018 [DEFAULT]              JSUB LIT
+  10 00001B [DEFAULT]              JSUB EEQU
+  11 00001E [DEFAULT]              JSUB EORG
+  12 000021 [DEFAULT]                +J EXIT
+  13 000025 [DEFAULT]     ADDR      LDA ONE
+  14 000028 [DEFAULT]               LDA #2
+  15 00002B [DEFAULT]               STL RETADR
+  16 00002E [DEFAULT]               LDL #THREE
+  17 000031 [DEFAULT]               STL THRPTR
+  18 000034 [DEFAULT]               LDA @THRPTR
+  19 000037 [DEFAULT]              +LDB #FOUR
+  20 00003B [DEFAULT]              BASE FOUR
+  21 00003B [DEFAULT]               LDA FOUR
+  22 00003E [DEFAULT]               LDL RETADR
+  23 000041 [DEFAULT]              RSUB
+  24 000044 [DEFAULT]     RTOR      LDS #4
+  25 000047 [DEFAULT]               LDT #1
+  26 00004A [DEFAULT]              ADDR S,T
+  27 00004C [DEFAULT]              RSUB
+  28 00004F [DEFAULT]      LIT      LDA =4276545
+  29 000052 [DEFAULT]               LDS =C'AAA'
+  30 000055 [DEFAULT]               LDT =X'414141'
+  31 000058 [DEFAULT]             LTORG
+   0 000058 [DEFAULT]          =LITERAL =4276545
+  32 00005B [DEFAULT]              RSUB
+  33 00005E [DEFAULT]     EEQU      LDA #FIVE1
+  34 000061 [DEFAULT]               LDA #0
+  35 000064 [DEFAULT]               LDA FIVE1
+  36 000067 [DEFAULT]               LDA #0
+  37 00006A [DEFAULT]               LDA FIVE2
+  38 00006D [DEFAULT]              RSUB
+  39 000070 [DEFAULT]     EORG      LDA =20
+  40 000073 [DEFAULT]               STA NUM1
+  41 000076 [DEFAULT]               LDA =25
+  42 000079 [DEFAULT]               STA NUM2
+  43 00007C [DEFAULT]               LDX #10
+  44 00007F [DEFAULT]               LDA =9
+  45 000082 [DEFAULT]               STA NUM1,X
+  46 000085 [DEFAULT]               LDA =25
+  47 000088 [DEFAULT]               STA NUM2,X
+  48 00008B [DEFAULT]              RSUB
+  49 00008E [DEFAULT]      ONE     WORD 1
+  50 000091 [DEFAULT]    THREE     WORD 3
+  51 000094 [DEFAULT]   THRPTR     RESW 1
+  52 000097 [DEFAULT]   RETADR     RESW 1
+  53 00009A [DEFAULT]     FIVE     WORD 5
+  54 00009D [DEFAULT]    FIVE1      EQU 5
+  55 00009D [DEFAULT]    FIVE2      EQU FIVE
+  56 00009D [DEFAULT]  BUFFERA     RESB 4096
+  57 00109D [DEFAULT]               ORG BUFFERA
+  58 00009D [DEFAULT]     NUM1     RESW 1
+  59 0000A0 [DEFAULT]     NUM2     RESW 1
+  60 0000A3 [DEFAULT]               ORG BUFFERA+4096
+  61 00109D [DEFAULT]     FOUR     WORD 4
+  62 0010A0 [DEFAULT]     EXIT        J EXIT
+  63 0010A3 [DEFAULT]               END MAIN
+   0 0010A3 [DEFAULT]          =LITERAL =20
+   0 0010A6 [DEFAULT]          =LITERAL =25
+   0 0010A9 [DEFAULT]          =LITERAL =9

@@ -1,8 +1,3 @@
-// assembler.cpp
-// SIC/XE 2-pass assembler — fixes for absolute-symbol direct encoding (no hardcoding).
-// Build: g++ -std=c++17 -O2 -o assembler assembler.cpp
-// Run: ./assembler <source.asm>
-
 #include <bits/stdc++.h>
 using namespace std;
 
@@ -14,13 +9,30 @@ static inline string trim(const string &s) {
     return s.substr(a, b - a + 1);
 }
 static inline vector<string> split_ws(const string &s) {
-    vector<string> out; istringstream iss(s); string tok; while (iss >> tok) out.push_back(tok); return out;
+    vector<string> out;
+    istringstream iss(s);
+    string tok;
+    while (iss >> tok) out.push_back(tok);
+    return out;
 }
-static inline string toUpper(const string &s) { string r=s; for (auto &c:r) c=toupper((unsigned char)c); return r; }
-static inline string hexPad(uint64_t v, int width) { stringstream ss; ss<<uppercase<<hex<<setw(width)<<setfill('0')<<v; return ss.str(); }
+static inline string toUpper(const string &s) {
+    string r=s;
+    for (auto &c:r) c=toupper((unsigned char)c);
+    return r;
+}
+static inline string hexPad(uint64_t v, int width) {
+    stringstream ss;
+    ss<<uppercase<<hex<<setw(width)<<setfill('0')<<v;
+    return ss.str();
+}
 static inline int hexStrToInt(const string &s) {
-    string t=s; if (t.size()>=2 && t[0]=='0' && (t[1]=='x'||t[1]=='X')) t=t.substr(2);
-    int v=0; stringstream ss; ss<<hex<<t; ss>>v; return v;
+    string t=s;
+    if (t.size()>=2 && t[0]=='0' && (t[1]=='x'||t[1]=='X')) t=t.substr(2);
+    int v=0;
+    stringstream ss;
+    ss<<hex<<t;
+    ss>>v;
+    return v;
 }
 static inline bool isNumberToken(const string &s) {
     if (s.empty()) return false;
@@ -29,7 +41,14 @@ static inline bool isNumberToken(const string &s) {
     return true;
 }
 static inline vector<string> splitByChar(const string &s, char c) {
-    vector<string> out; string cur; for (char ch: s) { if (ch==c) { out.push_back(cur); cur.clear(); } else cur.push_back(ch); } out.push_back(cur); return out;
+    vector<string> out;
+    string cur;
+    for (char ch: s) {
+        if (ch==c) { out.push_back(cur); cur.clear(); }
+        else cur.push_back(ch);
+    }
+    out.push_back(cur);
+    return out;
 }
 
 // ---------- OPTAB ----------
@@ -72,8 +91,8 @@ struct LitEntry {
     LitEntry(): length(0), hasAddr(false), addr(0), firstLineEncounter(INT_MAX) {}
 };
 vector<LitEntry> LIT_LIST;
-unordered_map<string,int> LIT_KEY_TO_IDX;
-unordered_map<string,string> LITERAL_TOKEN_MAP;
+unordered_map<string,int> LIT_KEY_TO_IDX; // hexKey -> index
+unordered_map<string,string> LITERAL_TOKEN_MAP; // token -> hexKey
 
 struct Block { string name; uint32_t locctr; uint32_t length; uint32_t startAddr; bool used; };
 vector<string> blockOrder;
@@ -96,12 +115,12 @@ vector<IntLine> INTLINES;
 uint32_t programStart = 0;
 string programName = "      ";
 string startBlockName = "DEFAULT";
-string END_LABEL = "";
+string END_OPERAND = "";
 
 vector<string> ERRORS;
 void logError(int lineNo, const string &msg) { stringstream ss; ss << "Line " << lineNo << ": " << msg; ERRORS.push_back(ss.str()); }
 
-// ---------- parse source ----------
+// ---------- Parsing ----------
 vector<IntLine> parseSourceFile(const string &fname) {
     vector<IntLine> out;
     ifstream ifs(fname);
@@ -109,11 +128,14 @@ vector<IntLine> parseSourceFile(const string &fname) {
     string raw; int lineno=0;
     while (getline(ifs, raw)) {
         ++lineno;
-        string line = raw; if (!line.empty() && line.back()=='\r') line.pop_back();
+        string line = raw;
+        if (!line.empty() && line.back()=='\r') line.pop_back();
         IntLine rec; rec.lineNo = lineno; rec.raw = line; rec.comment=false; rec.label=""; rec.opcode=""; rec.operand="";
         string t = trim(line);
         if (t.empty()) { rec.comment=true; out.push_back(rec); continue; }
         if (t[0]=='.') { rec.comment=true; out.push_back(rec); continue; }
+
+        // label 존재 여부: 라인의 첫 non-space 문자가 column 0이면 label이 있다고 가정 (원래 코드 방식 유지)
         size_t firstNon = line.find_first_not_of(" \t");
         bool hasLabel = (firstNon == 0);
         if (hasLabel) {
@@ -134,14 +156,14 @@ vector<IntLine> parseSourceFile(const string &fname) {
     return out;
 }
 
-// ---------- literal helpers ----------
+// ---------- constants -> bytes ----------
 vector<uint8_t> bytesFromConstant(const string &operand, bool &ok) {
     ok=false; vector<uint8_t> res;
     if (operand.size() == 0) return res;
     string s = operand;
     if (s.size() >= 3 && (s[0]=='C'||s[0]=='c') && s[1]=='\'' && s.back()=='\'') {
         string inner = s.substr(2, s.size()-3);
-        for (char c : inner) res.push_back((uint8_t)c);
+        for (char c : inner) res.push_back((uint8_t)((unsigned char)c));
         ok=true; return res;
     } else if (s.size() >= 3 && (s[0]=='X'||s[0]=='x') && s[1]=='\'' && s.back()=='\'') {
         string inner = s.substr(2, s.size()-3);
@@ -162,9 +184,8 @@ string bytesToHexKey(const vector<uint8_t> &bytes) {
     return ss.str();
 }
 
-// ---------- Expression evaluator ----------
+// ---------- expression eval ----------
 struct EvalResult { bool ok; uint32_t value; bool isAbsolute; string err; };
-// See earlier analysis: allow numbers, symbols, '*' and rules for relativity
 EvalResult evalExpression(const string &expr, const string &currBlock, uint32_t currLocctr, int lineNo) {
     string s = trim(expr);
     if (s.empty()) return {false,0,false,"empty expression"};
@@ -173,17 +194,24 @@ EvalResult evalExpression(const string &expr, const string &currBlock, uint32_t 
     while (i < s.size()) {
         while (i<s.size() && isspace((unsigned char)s[i])) ++i;
         if (i>=s.size()) break;
-        if (s[i] == '+' || s[i] == '-') { sign = s[i]; ++i; while (i<s.size() && isspace((unsigned char)s[i])) ++i; }
-        size_t j = i; while (j<s.size() && s[j] != '+' && s[j] != '-') ++j;
+        if (s[i] == '+' || s[i] == '-') {
+            sign = s[i];
+            ++i;
+            while (i<s.size() && isspace((unsigned char)s[i])) ++i;
+        }
+        size_t j = i;
+        while (j<s.size() && s[j] != '+' && s[j] != '-') ++j;
         string token = trim(s.substr(i, j-i));
         if (token.empty()) return {false,0,false,"bad token in expression"};
         terms.push_back({sign, token});
         sign = '+';
         i = j;
     }
+
     long long acc = 0;
     int relativeCount = 0;
     vector<pair<char, tuple<uint32_t,bool,string>>> evaluated;
+
     for (auto &p : terms) {
         char sg = p.first; string tok = p.second;
         uint32_t val = 0; bool isAbsTerm = false; string termBlock="";
@@ -199,6 +227,7 @@ EvalResult evalExpression(const string &expr, const string &currBlock, uint32_t 
         evaluated.push_back({sg, make_tuple(val, isAbsTerm, termBlock)});
         if (!isAbsTerm) ++relativeCount;
     }
+
     if (relativeCount >= 3) return {false,0,false,"Too many relative terms"};
     if (relativeCount == 2) {
         int idx=0; vector<int> relIdx;
@@ -219,21 +248,32 @@ EvalResult evalExpression(const string &expr, const string &currBlock, uint32_t 
     return {true, (uint32_t)acc, resultAbs, ""};
 }
 
-// ---------- PASS1 ----------
+// ---------- literal pool 처리 (안전하게 변경) ----------
+// 기존: INTLINES에 루프 도중 직접 push하던 것을, 로컬 벡터에 모아 한 번에 append 하도록 함.
+// 또한 생성된 IntLine의 generatedObject는 false로 둡니다. (PASS2가 실제 objectCode를 생성하도록)
 void processLiteralPool_upToLine(uint32_t &locctr, const string &currBlock, int currentLine) {
+    vector<IntLine> pending; // *** CHANGED: 임시 저장
     for (size_t i=0;i<LIT_LIST.size(); ++i) {
         auto &lit = LIT_LIST[i];
         if (!lit.hasAddr && lit.firstLineEncounter <= currentLine) {
             lit.hasAddr = true; lit.block = currBlock; lit.addr = locctr;
             locctr += lit.length;
             IntLine r; r.lineNo = 0; r.label=""; r.opcode="=LITERAL"; r.operand = lit.firstToken;
-            r.raw = lit.firstToken; r.comment=false; r.block = currBlock; r.addr = lit.addr; r.generatedObject=true; r.objectCode="";
-            INTLINES.push_back(r);
+            r.raw = lit.firstToken; r.comment=false; r.block = currBlock; r.addr = lit.addr;
+            r.generatedObject = false; // *** CHANGED: PASS1에서는 object 생성되지 않음
+            r.objectCode = "";
+            pending.push_back(r);
         }
+    }
+    // INTLINES 끝에 한 번에 추가 (부작용 방지)
+    if (!pending.empty()) {
+        for (auto &x : pending) INTLINES.push_back(x);
     }
 }
 
+// ---------- PASS1 ----------
 void doPass1(const string &srcFile) {
+    // 전역 초기화
     SYMTAB.clear(); LIT_LIST.clear(); LIT_KEY_TO_IDX.clear(); LITERAL_TOKEN_MAP.clear();
     INTLINES.clear(); BLOCKTAB.clear(); blockOrder.clear(); ERRORS.clear();
     programStart = 0; programName = "      ";
@@ -244,7 +284,12 @@ void doPass1(const string &srcFile) {
     uint32_t locctr = 0;
     bool started = false;
 
-    auto ensureBlock = [&](const string &bname){ string bn = bname.empty()? startBlockName : bname; if (BLOCKTAB.find(bn) == BLOCKTAB.end()) { BLOCKTAB[bn] = Block{bn,0,0,0,true}; blockOrder.push_back(bn);} };
+    auto ensureBlock = [&](const string &bname){ string bn = bname.empty()? startBlockName : bname;
+        if (BLOCKTAB.find(bn) == BLOCKTAB.end()) {
+            BLOCKTAB[bn] = Block{bn,0,0,0,true};
+            blockOrder.push_back(bn);
+        }
+    };
 
     vector<IntLine> parsed = parseSourceFile(srcFile);
     int lineno=0;
@@ -321,12 +366,12 @@ void doPass1(const string &srcFile) {
         }
 
         if (op == "END") {
+            if (!operand.empty()) {
+                END_OPERAND = trim(operand);
+            }
             rec.addr = locctr; INTLINES.push_back(rec);
             processLiteralPool_upToLine(locctr, currBlock, rec.lineNo);
             BLOCKTAB[currBlock].locctr = locctr; break;
-            if (!operand.empty()) {
-                END_LABEL = trim(operand); // store end entry label for pass2
-            }
         }
 
         if (op == "BASE") { rec.addr = locctr; INTLINES.push_back(rec); continue; }
@@ -337,22 +382,30 @@ void doPass1(const string &srcFile) {
             else SYMTAB[lab] = SymEntry{lab, locctr, currBlock, false};
         }
 
-        // literal detection
         if (!operand.empty()) {
-            string opnd = operand; size_t commaPos = opnd.find(','); if (commaPos!=string::npos) opnd = trim(opnd.substr(0, commaPos));
+            string opnd = operand;
+            size_t commaPos = opnd.find(',');
+            if (commaPos!=string::npos) opnd = trim(opnd.substr(0, commaPos));
+
             if (!opnd.empty() && opnd[0]=='=') {
                 string litToken = opnd;
                 string litVal = litToken.substr(1);
-                bool ok=false; vector<uint8_t> bytes = bytesFromConstant(litVal, ok);
+                bool ok=false;
+                vector<uint8_t> bytes = bytesFromConstant(litVal, ok);
+
                 if (!ok) {
                     vector<uint8_t> b; long long v=0; try { v = stoll(litVal); } catch(...) { v=0; }
                     b.push_back((v>>16)&0xFF); b.push_back((v>>8)&0xFF); b.push_back(v&0xFF); bytes = b; ok=true;
                 }
                 string hk = bytesToHexKey(bytes);
+                // *** CHANGED: 인덱스 계산을 명시적으로 수행하여 off-by-one 방지
                 if (LIT_KEY_TO_IDX.find(hk) == LIT_KEY_TO_IDX.end()) {
-                    LitEntry ent; ent.hexKey = hk; ent.firstToken = litToken; ent.bytes = bytes; ent.length = (uint32_t)bytes.size();
+                    int idx = (int)LIT_LIST.size();
+                    LitEntry ent;
+                    ent.hexKey = hk; ent.firstToken = litToken; ent.bytes = bytes; ent.length = (uint32_t)bytes.size();
                     ent.hasAddr = false; ent.block=""; ent.addr=0; ent.firstLineEncounter = rec.lineNo;
-                    LIT_LIST.push_back(ent); LIT_KEY_TO_IDX[hk] = (int)LIT_LIST.size()-1;
+                    LIT_LIST.push_back(ent);
+                    LIT_KEY_TO_IDX[hk] = idx;
                 } else {
                     int idx = LIT_KEY_TO_IDX[hk];
                     if (LIT_LIST[idx].firstLineEncounter > rec.lineNo) LIT_LIST[idx].firstLineEncounter = rec.lineNo;
@@ -361,7 +414,6 @@ void doPass1(const string &srcFile) {
             }
         }
 
-        // LOCCTR increment
         uint32_t inc = 0;
         bool isFormat4 = false;
         string opcodeToken = op;
@@ -388,14 +440,12 @@ void doPass1(const string &srcFile) {
         INTLINES.push_back(rec);
         locctr += inc;
         BLOCKTAB[currBlock].locctr = locctr;
-    } // end parsed
+    }
 
-    // compute block lengths and start addresses
     for (auto &bn : blockOrder) if (BLOCKTAB.find(bn) != BLOCKTAB.end()) BLOCKTAB[bn].length = BLOCKTAB[bn].locctr;
     uint32_t curAbs = programStart;
     for (auto &bn : blockOrder) { BLOCKTAB[bn].startAddr = curAbs; curAbs += BLOCKTAB[bn].length; }
 
-    // write INTFILE
     ofstream intf("INTFILE.txt");
     for (auto &r : INTLINES) {
         if (r.comment) { intf << setw(4) << r.lineNo << "    " << r.raw << "\n"; continue; }
@@ -431,13 +481,20 @@ uint32_t computeAbsAddrSymbol(const string &sym, bool &ok) {
     if (it != SYMTAB.end()) {
         if (BLOCKTAB.find(it->second.block) == BLOCKTAB.end()) return 0;
         ok = true;
-        if (it->second.isAbsolute) return it->second.addr; // absolute stored value
+        if (it->second.isAbsolute) return it->second.addr;
         return BLOCKTAB[it->second.block].startAddr + it->second.addr;
     }
     try { uint32_t v = (uint32_t)stoul(sym,nullptr,0); ok=true; return v; } catch(...) { ok=false; return 0; }
 }
-string buildFormat1(uint8_t opcode) { stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)opcode; return ss.str(); }
-string buildFormat2(uint8_t opcode, int r1, int r2) { uint8_t b0 = opcode; uint8_t b1 = ((r1&0xF)<<4) | (r2 & 0xF); stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)b0<<setw(2)<<(int)b1; return ss.str(); }
+string buildFormat1(uint8_t opcode) {
+    stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)opcode;
+    return ss.str();
+}
+string buildFormat2(uint8_t opcode, int r1, int r2) {
+    uint8_t b0 = opcode; uint8_t b1 = ((r1&0xF)<<4) | (r2 & 0xF);
+    stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)b0<<setw(2)<<(int)b1;
+    return ss.str();
+}
 string buildFormat34(uint8_t opcode, bool n,bool i,bool x,bool b,bool p,bool e,uint32_t disp_or_addr) {
     uint8_t byte0 = (opcode & 0xFC) | ( ((n?1:0)<<1) | (i?1:0) );
     if (!e) {
@@ -445,14 +502,16 @@ string buildFormat34(uint8_t opcode, bool n,bool i,bool x,bool b,bool p,bool e,u
         uint8_t flags = ((x?1:0)<<3) | ((b?1:0)<<2) | ((p?1:0)<<1) | (e?1:0);
         uint8_t byte1 = (flags << 4) | ((disp12 >> 8) & 0x0F);
         uint8_t byte2 = disp12 & 0xFF;
-        stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)byte0<<setw(2)<<(int)byte1<<setw(2)<<(int)byte2; return ss.str();
+        stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)byte0<<setw(2)<<(int)byte1<<setw(2)<<(int)byte2;
+        return ss.str();
     } else {
         uint32_t addr20 = disp_or_addr & 0xFFFFF;
         uint8_t flags = ((x?1:0)<<3) | ((b?1:0)<<2) | ((p?1:0)<<1) | (e?1:0);
         uint8_t byte1 = (flags << 4) | ((addr20 >> 16) & 0x0F);
         uint8_t byte2 = (addr20 >> 8) & 0xFF;
         uint8_t byte3 = addr20 & 0xFF;
-        stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)byte0<<setw(2)<<(int)byte1<<setw(2)<<(int)byte2<<setw(2)<<(int)byte3; return ss.str();
+        stringstream ss; ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)byte0<<setw(2)<<(int)byte1<<setw(2)<<(int)byte2<<setw(2)<<(int)byte3;
+        return ss.str();
     }
 }
 vector<uint8_t> hexStrToBytes(const string &hexs) {
@@ -467,7 +526,6 @@ vector<uint8_t> hexStrToBytes(const string &hexs) {
 
 // ---------- PASS2 ----------
 void doPass2(const string &srcFile) {
-    // assign block start addresses sequentially
     uint32_t curAddr = programStart;
     for (auto &bn : blockOrder) {
         BLOCKTAB[bn].startAddr = curAddr;
@@ -475,23 +533,45 @@ void doPass2(const string &srcFile) {
     }
     uint32_t programLength = curAddr - programStart;
 
-    // track base register state as we iterate INTLINES
     bool baseOn = false;
     uint32_t baseValue = 0;
 
-    // generate object codes per INTLINE sequentially (so BASE updates are in-order)
+    auto bytesToHexString = [&](const vector<uint8_t> &bytes) -> string {
+        stringstream ss;
+        ss << uppercase << hex;
+        for (auto b : bytes) ss << setw(2) << setfill('0') << (int)b;
+        return ss.str();
+    };
+
+    auto appendBytesToBlockMap = [&](unordered_map<string, map<uint32_t,uint8_t>> &bbmap,
+                                     const string &block, uint32_t absAddr,
+                                     const vector<uint8_t> &bytes, int lineNo) {
+        auto &m = bbmap[block];
+        for (size_t i = 0; i < bytes.size(); ++i) {
+            uint32_t a = absAddr + (uint32_t)i;
+            if (m.find(a) != m.end()) {
+                logError(lineNo, "Byte overlap at address " + hexPad(a,6) + " in block " + block);
+            }
+            m[a] = bytes[i];
+        }
+    };
+
+    // PASS2: object code 생성
     for (auto &r : INTLINES) {
         r.generatedObject = false; r.objectCode = "";
+
         if (r.comment) continue;
         string op = toUpper(r.opcode);
         string operand = trim(r.operand);
 
-        if (op=="START" || op=="END" || op=="LTORG" || op=="USE" || op=="ORG" || op=="EQU") continue;
+        if (op=="START" || op=="END" || op=="LTORG" || op=="USE" || op=="ORG" || op=="EQU" || op == "RESW" || op == "RESB") continue;
 
         if (op == "BASE") {
             if (!operand.empty()) {
-                bool ok=false; uint32_t a = computeAbsAddrSymbol(operand, ok);
-                if (ok) { baseOn = true; baseValue = a; } else { logError(r.lineNo, "BASE unresolved: "+operand); baseOn=false; }
+                bool ok=false;
+                uint32_t a = computeAbsAddrSymbol(operand, ok);
+                if (ok) { baseOn = true; baseValue = a; }
+                else { logError(r.lineNo, "BASE unresolved: "+operand); baseOn=false; }
             } else { baseOn = false; }
             continue;
         }
@@ -501,8 +581,8 @@ void doPass2(const string &srcFile) {
             if (LITERAL_TOKEN_MAP.find(tok) != LITERAL_TOKEN_MAP.end()) {
                 string hk = LITERAL_TOKEN_MAP[tok];
                 int idx = LIT_KEY_TO_IDX[hk];
-                stringstream ss; for (auto b : LIT_LIST[idx].bytes) ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)b;
-                r.objectCode = ss.str(); r.generatedObject=true;
+                r.objectCode = bytesToHexString(LIT_LIST[idx].bytes);
+                r.generatedObject = true;
             } else logError(r.lineNo, "Unknown literal token in pass2: "+tok);
             continue;
         }
@@ -511,15 +591,23 @@ void doPass2(const string &srcFile) {
             uint32_t v=0;
             if (!operand.empty()) {
                 if (isNumberToken(operand)) v=(uint32_t)stoul(operand,nullptr,0);
-                else { bool ok=false; uint32_t a = computeAbsAddrSymbol(operand, ok); if (ok) v=a; else logError(r.lineNo,"WORD unresolved: "+operand); }
+                else {
+                    bool ok=false; uint32_t a = computeAbsAddrSymbol(operand, ok);
+                    if (ok) v=a;
+                    else logError(r.lineNo,"WORD unresolved: "+operand);
+                }
             }
-            r.objectCode = hexPad(v,6); r.generatedObject = true; continue;
+            r.objectCode = hexPad(v,6); r.generatedObject = true;
+            continue;
         }
+
         if (op == "BYTE") {
             if (operand.size()>=3 && (operand[0]=='C'||operand[0]=='c') && operand[1]=='\'' && operand.back()=='\'') {
                 string inner = operand.substr(2, operand.size()-3);
-                stringstream ss; for (char c : inner) ss<<uppercase<<hex<<setw(2)<<setfill('0')<<(int)((unsigned char)c);
-                r.objectCode = ss.str(); r.generatedObject=true;
+                vector<uint8_t> tmp;
+                for (char c : inner) tmp.push_back((uint8_t)((unsigned char)c));
+                r.objectCode = bytesToHexString(tmp);
+                r.generatedObject = true;
             } else if (operand.size()>=3 && (operand[0]=='X'||operand[0]=='x') && operand[1]=='\'' && operand.back()=='\'') {
                 string inner = operand.substr(2, operand.size()-3);
                 r.objectCode = toUpper(inner); r.generatedObject=true;
@@ -529,7 +617,6 @@ void doPass2(const string &srcFile) {
             }
             continue;
         }
-        if (op == "RESW" || op == "RESB") continue;
 
         bool isFormat4 = false;
         string opClean = op;
@@ -537,23 +624,34 @@ void doPass2(const string &srcFile) {
         if (OPTAB.find(opClean) == OPTAB.end()) { logError(r.lineNo, "Undefined opcode: " + opClean); continue; }
         uint8_t opcode = OPTAB[opClean].opcode;
 
-        if (FORMAT1.find(opClean) != FORMAT1.end()) { r.objectCode = buildFormat1(opcode); r.generatedObject=true; continue; }
+        if (FORMAT1.find(opClean) != FORMAT1.end()) {
+            r.objectCode = buildFormat1(opcode); r.generatedObject=true;
+            continue;
+        }
         if (FORMAT2.find(opClean) != FORMAT2.end()) {
             int r1=-1,r2=0;
             if (!operand.empty()) {
                 auto parts = splitByChar(operand, ',');
-                if (parts.size()>=1) { string p1 = trim(parts[0]); if (REGNUM.find(toUpper(p1)) != REGNUM.end()) r1 = REGNUM[toUpper(p1)]; else { try { r1 = stoi(p1);} catch(...) { r1=0; } } }
-                if (parts.size()>=2) { string p2 = trim(parts[1]); if (REGNUM.find(toUpper(p2)) != REGNUM.end()) r2 = REGNUM[toUpper(p2)]; else { try { r2 = stoi(p2);} catch(...) { r2=0; } } }
+                if (parts.size()>=1) {
+                    string p1 = trim(parts[0]);
+                    if (REGNUM.find(toUpper(p1)) != REGNUM.end()) r1 = REGNUM[toUpper(p1)];
+                    else { try { r1 = stoi(p1);} catch(...) { r1=0; } }
+                }
+                if (parts.size()>=2) {
+                    string p2 = trim(parts[1]);
+                    if (REGNUM.find(toUpper(p2)) != REGNUM.end()) r2 = REGNUM[toUpper(p2)];
+                    else { try { r2 = stoi(p2);} catch(...) { r2=0; } }
+                }
             }
             r.objectCode = buildFormat2(opcode, r1, r2); r.generatedObject=true; continue;
         }
 
-        // format 3/4
         bool n=false,i=false,x=false,b=false,p=false,e=false;
         string oper = operand;
         if (!oper.empty() && oper[0] == '#') { i=true; n=false; oper = oper.substr(1); }
         else if (!oper.empty() && oper[0] == '@') { n=true; i=false; oper = oper.substr(1); }
         else { n=true; i=true; }
+
         string operNoIndex = oper;
         if (!operNoIndex.empty()) {
             size_t comma = operNoIndex.find(',');
@@ -562,11 +660,13 @@ void doPass2(const string &srcFile) {
                 if (toUpper(after) == "X") { x=true; operNoIndex = trim(operNoIndex.substr(0, comma)); }
             }
         }
+
         if (isFormat4) e = true;
 
         bool immediateNumeric = false; uint32_t immediateValue = 0;
         if (i && !operNoIndex.empty() && isNumberToken(operNoIndex)) {
-            try { immediateValue = (uint32_t)stoul(operNoIndex,nullptr,0); immediateNumeric=true; } catch(...) { immediateNumeric=false; }
+            try { immediateValue = (uint32_t)stoul(operNoIndex,nullptr,0); immediateNumeric=true; }
+            catch(...) { immediateNumeric=false; }
         }
         if (immediateNumeric && !operNoIndex.empty()) {
             if (!isFormat4 && immediateValue > 0xFFF) { isFormat4 = true; e = true; }
@@ -585,20 +685,17 @@ void doPass2(const string &srcFile) {
                 else { logError(r.lineNo, "Literal not placed yet: " + litTok); okTarget=false; }
             } else { logError(r.lineNo, "Literal token unknown: " + litTok); okTarget=false; }
         } else if (!operNoIndex.empty()) {
-            // check SYMTAB first to get isAbsolute info
             auto it = SYMTAB.find(toUpper(operNoIndex));
             if (it != SYMTAB.end()) {
                 if (it->second.isAbsolute) { targetIsAbsoluteSymbol = true; targetAbs = it->second.addr; okTarget=true; }
                 else { targetIsAbsoluteSymbol = false; targetAbs = BLOCKTAB[it->second.block].startAddr + it->second.addr; okTarget=true; }
             } else {
-                // maybe numeric literal like '123' (should have been caught earlier), or undefined
                 bool ok=false; uint32_t a = computeAbsAddrSymbol(operNoIndex, ok);
                 if (ok) { targetAbs = a; okTarget=true; targetIsAbsoluteSymbol = true; } else { okTarget=false; }
             }
         } else okTarget=false;
 
         if (!okTarget && !(opClean == "RSUB")) { logError(r.lineNo, "Undefined operand: " + operNoIndex); continue; }
-
         if (opClean == "RSUB") {
             r.objectCode = buildFormat34(opcode, true, true, false, false, false, false, 0);
             r.generatedObject=true; continue;
@@ -607,7 +704,6 @@ void doPass2(const string &srcFile) {
         uint32_t instrAbs = BLOCKTAB[r.block].startAddr + r.addr;
         int instrLen = isFormat4 ? 4 : 3;
 
-        // If operand is a symbol and it's absolute in SYMTAB, prefer direct 12-bit encoding (p=b=0) if it fits.
         if (!isFormat4 && okTarget && !operandIsLiteral && (!immediateNumeric) && targetIsAbsoluteSymbol) {
             if (targetAbs <= 0xFFF) {
                 p = false; b = false;
@@ -615,7 +711,6 @@ void doPass2(const string &srcFile) {
                 r.generatedObject = true;
                 continue;
             } else {
-                // too big -> fall through to format4
                 isFormat4 = true; e = true; instrLen = 4;
             }
         }
@@ -648,47 +743,29 @@ void doPass2(const string &srcFile) {
             r.objectCode = buildFormat34(opcode, n, i, x, false, false, true, targetAbs);
             r.generatedObject = true; continue;
         }
-    } // end INTLINES
+    }
 
-    // Build per-block address->byte map
     unordered_map<string, map<uint32_t,uint8_t>> blockByteMap;
+    vector<pair<uint32_t,int>> MRECS;
+
     for (auto &r : INTLINES) {
         if (r.generatedObject && !r.objectCode.empty()) {
             uint32_t abs = BLOCKTAB[r.block].startAddr + r.addr;
             auto bytes = hexStrToBytes(r.objectCode);
-            for (size_t i=0;i<bytes.size(); ++i) {
-                uint32_t a = abs + (uint32_t)i;
-                auto &m = blockByteMap[r.block];
-                if (m.find(a) != m.end()) {
-                    logError(r.lineNo, "Byte overlap at address " + hexPad(a,6) + " in block " + r.block);
-                }
-                m[a] = bytes[i];
+            appendBytesToBlockMap(blockByteMap, r.block, abs, bytes, r.lineNo);
+            if (r.objectCode.size() == 8) {
+                MRECS.push_back({abs+1, 5});
             }
         }
     }
-    // add literal bytes
+
     for (size_t i=0;i<LIT_LIST.size(); ++i) {
         auto &lit = LIT_LIST[i];
         if (!lit.hasAddr) continue;
         uint32_t abs = BLOCKTAB[lit.block].startAddr + lit.addr;
-        auto &m = blockByteMap[lit.block];
-        for (size_t j=0;j<lit.bytes.size(); ++j) {
-            uint32_t a = abs + (uint32_t)j;
-            if (m.find(a) != m.end()) logError(0, "Literal overlap at " + hexPad(a,6));
-            m[a] = lit.bytes[j];
-        }
+        appendBytesToBlockMap(blockByteMap, lit.block, abs, lit.bytes, 0);
     }
 
-    // Build M records list (format4 entries)
-    vector<pair<uint32_t,int>> MRECS;
-    for (auto &r : INTLINES) {
-        if (r.generatedObject && r.objectCode.size() == 8) {
-            uint32_t abs = BLOCKTAB[r.block].startAddr + r.addr;
-            MRECS.push_back({abs+1, 5});
-        }
-    }
-
-    // Write OBJ file
     ofstream objf("OBJFILE.obj");
     string pname = programName; if (pname.size() > 6) pname = pname.substr(0,6); else pname += string(6 - pname.size(), ' ');
     objf << "H" << pname << hexPad(programStart,6) << hexPad(programLength,6) << "\n";
@@ -722,10 +799,10 @@ void doPass2(const string &srcFile) {
     }
 
     uint32_t entryAddr = programStart;
-    if (!END_LABEL.empty()) {
-        bool ok=false; uint32_t a = computeAbsAddrSymbol(END_LABEL, ok);
+    if (!END_OPERAND.empty()) {
+        bool ok=false; uint32_t a = computeAbsAddrSymbol(END_OPERAND, ok);
         if (ok) entryAddr = a;
-        else logError(0, "END entry symbol unresolved: " + END_LABEL);
+        else logError(0, "END entry symbol unresolved: " + END_OPERAND);
     }
     objf << "E" << hexPad(entryAddr,6) << "\n";
     cout << "E" << hexPad(entryAddr,6) << "\n";
@@ -741,17 +818,29 @@ void doPass2(const string &srcFile) {
     cout << "Wrote OBJFILE.obj, INTFILE.txt, SYMTAB.txt, LITTAB.txt\n";
 }
 
-// ---------- main ----------
 int main(int argc, char** argv) {
     ios::sync_with_stdio(false);
     cin.tie(nullptr);
-    cout << "SIC/XE 2-pass assembler (fixed absolute-symbol direct encoding)\n";
+
+    cout << "\nSIC/XE 2-pass assembler (fixed)\n";
     string src;
     if (argc >= 2) src = argv[1];
-    else { cout << "Enter source filename: " << flush; if (!getline(cin, src)) { cerr << "No input\n"; return 1; } src = trim(src); if (src.empty()) { cerr << "Empty filename\n"; return 1; } }
+    else {
+        cout << "Enter source filename: " << flush;
+        if (!getline(cin, src)) { cerr << "No input\n"; return 1; }
+        src = trim(src);
+        if (src.empty()) { cerr << "Empty filename\n"; return 1; }
+    }
+
     if (!loadOptab("optab.txt")) { cerr << "Failed to load optab.txt\n"; return 2; }
-    BLOCKTAB.clear(); blockOrder.clear(); BLOCKTAB[startBlockName] = Block{startBlockName,0,0,0,true}; blockOrder.push_back(startBlockName);
+
+    BLOCKTAB.clear();
+    blockOrder.clear();
+    BLOCKTAB[startBlockName] = Block{startBlockName,0,0,0,true};
+    blockOrder.push_back(startBlockName);
+
     doPass1(src);
     doPass2(src);
+
     return 0;
 }

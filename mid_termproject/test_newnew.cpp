@@ -889,50 +889,62 @@ void doPass2(const string &srcFile) {
     }
 
     // Write OBJFILE
-    ofstream objf("OBJFILE.obj");
-    string pname = programName;
-    if (pname.size() > 6) pname = pname.substr(0,6);
-    else pname = pname + string(6 - pname.size(), ' ');
-    objf << "H" << pname << hexPad(programStart,6) << hexPad(programLength,6) << "\n";
+    ofstream obj("OBJFILE.obj");
 
-    // Per-block T records
-    for (auto &bn : blockOrder) {
-        vector<ObjFrag> bfrags;
-        for (auto &f : frags) if (f.block == bn) bfrags.push_back(f);
-        if (bfrags.empty()) continue;
-        sort(bfrags.begin(), bfrags.end(), [](const ObjFrag &a, const ObjFrag &b){ return a.absAddr < b.absAddr; });
-        size_t idx = 0;
-        while (idx < bfrags.size()) {
-            uint32_t tStart = bfrags[idx].absAddr;
-            string tBytes = "";
-            uint32_t tLenBytes = 0;
-            uint32_t expectedNext = tStart;
-            while (idx < bfrags.size()) {
-                auto &f = bfrags[idx];
-                uint32_t fbyteLen = (uint32_t)(f.bytes.size() / 2);
-                if (f.absAddr != expectedNext) break;
-                if (tLenBytes + fbyteLen > 30) break;
-                tBytes += f.bytes;
-                tLenBytes += fbyteLen;
-                expectedNext += fbyteLen;
-                ++idx;
-            }
-            if (tLenBytes == 0) {
-                auto &f = bfrags[idx++];
-                uint32_t fbyteLen = (uint32_t)(f.bytes.size()/2);
-                objf << "T" << hexPad(f.absAddr,6) << hexPad(fbyteLen,2) << f.bytes << "\n";
-            } else {
-                objf << "T" << hexPad(tStart,6) << hexPad(tLenBytes,2) << tBytes << "\n";
-            }
+    // 프로그램 이름/길이 정보 사용
+    if (programName.size() > 6) programName = programName.substr(0,6);
+    else programName = programName + string(6 - programName.size(), ' ');
+
+    // H record
+    obj << "H"
+        << setw(6) << left << programName.substr(0,6)
+        << hexPad(programStart,6)
+        << hexPad(programLength,6) << "\n";
+
+    // First object code address
+    uint32_t firstObjAddr = 0;
+    for (auto &r : INTLINES) {
+        if (r.generatedObject && !r.objectCode.empty()) {
+            firstObjAddr = BLOCKTAB[r.block].startAddr + r.addr;
+            break;
         }
     }
 
+    // T records
+    string cur = "";
+    uint32_t curStart = firstObjAddr;
+    uint32_t curLen = 0;
+
+    auto flush = [&]() {
+        if (curLen > 0) {
+            obj << "T" << hexPad(curStart,6) << hexPad(curLen,2) << cur << "\n";
+            cur.clear();
+            curLen = 0;
+        }
+    };
+
+    for (auto &r : INTLINES) {
+        if (!r.generatedObject || r.objectCode.empty()) {
+            flush();
+            continue;
+        }
+        uint32_t absAddr = BLOCKTAB[r.block].startAddr + r.addr;
+        if (curLen == 0) curStart = absAddr;
+        if (curLen + (r.objectCode.size()/2) > 30) flush();
+        cur += r.objectCode;
+        curLen += (r.objectCode.size()/2);
+    }
+    flush();
+
+    // M records
     for (auto &m : MRECS) {
-        objf << "M" << hexPad(m.first,6) << setw(2) << setfill('0') << uppercase << hex << m.second << "\n";
+        obj << "M" << hexPad(m.first,6) << setw(2) << setfill('0') << uppercase << hex << m.second << "\n";
     }
 
-    objf << "E" << hexPad(programStart,6) << "\n";
-    objf.close();
+    // E record
+    obj << "E" << hexPad(programStart,6) << "\n";
+
+    obj.close();
 
     cout << "=== PASS2 complete ===\n";
     cout << "Program length: " << hexPad(programLength,6) << "\n";
