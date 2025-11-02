@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <string>
 #include <vector>
+#include <bitset>
 using namespace std;
 
 // 문자열 앞뒤 공백 제거
@@ -21,12 +22,36 @@ static inline vector<string> split(const string &s) {
     while (iss >> tok) out.push_back(tok); 
     return out;
 }
+// 16진수 형식 문자열 -> 16진수
+static inline size_t hexstrToHex(string hexStr) {
+    stringstream ss;
+    size_t hexOutput;
+    ss << hex << hexStr;
+    ss >> hexOutput;
+
+    return hexOutput;
+}
+// 16진수 -> 16진수 형식 문자열
+static inline string hexToHexstr(size_t hexInput) {
+    stringstream ss;
+
+    ss << uppercase << hex << hexInput;
+    string hexStr = ss.str();
+
+    return hexStr;
+}
+// 16진수 형식 문자열 -> 2진수
+string hexstrToBin(char hexChar) {
+    unsigned int value = stoi(string(1, hexChar), nullptr, 16);
+    return bitset<4>(value).to_string();
+}
 
 struct Memory {
-    char mem[32758];
-    string programName;
-    size_t programStart;
-    size_t programLength;
+    char mem[32758] = { 0 };
+    string programName; // 프로그램 이름
+    size_t logicalStart = 0; // 프로그램 논리적 시작 주소
+    size_t realStart = 0; // 프로그램 실제 시작 주소
+    size_t programLength = 0; // 프로그램 길이
 };
 
 /**
@@ -44,7 +69,7 @@ struct Memory {
  */
 void fileRead(string name, Memory &memory) {
     ifstream file(name);
-    if (file.is_open()) return;
+    if (!file.is_open()) return;
 
     string record;
     while (getline(file, record)) {
@@ -74,24 +99,39 @@ void HParse(string record, Memory &memory) {
     }
 
     memory.programName = hRecord[0].substr(1);
-    memory.programStart = stoi(hRecord[1].substr(0, 5));
-    memory.programLength = stoi(hRecord[1].substr(6, 11));
+    memory.logicalStart = hexstrToHex(hRecord[1].substr(0, 6));
+    memory.programLength = hexstrToHex(hRecord[1].substr(6, 6));
 }
 
 /**
  * T 레코드 읽기
  */
 void TParse(string line, Memory &memory) {
-    vector<string> record;
-    record.push_back(line.substr(1, 6)); // 시작 주소
-    record.push_back(line.substr(7, 8));
-    record.push_back(line.substr(9, 11));
+    size_t pos = hexstrToHex(line.substr(1, 6));  // 시작 주소
+    size_t len = hexstrToHex(line.substr(7, 2));  // 길이
+    string relocation = line.substr(9,3); // 재배치 비트
+    vector<char> relocBits;
 
-    int idx = 12;
-    size_t pos = memory.programStart;
-    string objcode = line.substr(idx);
-    while (idx < line.length() - 1) {
-        memory.mem[pos++] = stoi(line.substr(idx, idx + 1));
+    for (char r : relocation) {
+        string rStr = hexstrToBin(r);
+        for (char c : rStr) {
+            relocBits.insert(relocBits.end(), 3, c);
+        }
+    }
+
+    int relocCounter = 0;
+    int idx = 12; // object code 시작 지점
+    while (idx < (12 + len * 2)) { // 앞의 12자리 고정, 뒤의 len * 2가 실제 object code 길이(두 글자가 한 바이트)
+        unsigned char byte = (unsigned char)hexstrToHex(line.substr(idx, 2));
+
+        if (relocBits[relocCounter] == '1') {
+            memory.mem[pos + memory.realStart] = byte;
+            pos++;
+            relocCounter++;
+        }
+        else {
+            memory.mem[pos++] = byte;
+        }
         idx += 2;
     }
 }
@@ -132,11 +172,16 @@ void printMemory(Memory &memory) {
 
 int main() {
     Memory memory;
-    memory.programStart = 0;
+    memory.logicalStart = 0;
     string file;
+    string inputStart;
     
     cout << "objfile 이름 입력: ";
     getline(cin, file);
+
+    cout << "프로그램 시작 주소 입력: ";
+    cin >> inputStart;
+    memory.realStart = hexstrToHex(inputStart);
 
     fileRead(file, memory);
 
