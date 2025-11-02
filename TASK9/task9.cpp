@@ -49,8 +49,8 @@ string hexstrToBin(char hexChar) {
 struct Memory {
     char mem[32758] = { 0 };
     string programName; // 프로그램 이름
-    size_t logicalStart = 0; // 프로그램 논리적 시작 주소
-    size_t realStart = 0; // 프로그램 실제 시작 주소
+    size_t programStart = 0; // 프로그램 논리적 시작 주소
+    size_t loadAddress = 0; // 프로그램이 실제로 로드되는 주소
     size_t programLength = 0; // 프로그램 길이
 };
 
@@ -99,40 +99,58 @@ void HParse(string record, Memory &memory) {
     }
 
     memory.programName = hRecord[0].substr(1);
-    memory.logicalStart = hexstrToHex(hRecord[1].substr(0, 6));
+    memory.programStart = hexstrToHex(hRecord[1].substr(0, 6));
     memory.programLength = hexstrToHex(hRecord[1].substr(6, 6));
+
+    if (32758 - memory.loadAddress < memory.programLength) {
+        cout << "out of range" << endl;
+        return;
+    }
 }
 
 /**
  * T 레코드 읽기
  */
 void TParse(string line, Memory &memory) {
-    size_t pos = hexstrToHex(line.substr(1, 6));  // 시작 주소
+    size_t offset = memory.loadAddress - memory.programStart; // 오프셋: 실제 로드되는 주소와 프로그램에 작성한 주소간 거리차
+    size_t address = hexstrToHex(line.substr(1,6)) + offset; // 메모리에 로드되는 주소
     size_t len = hexstrToHex(line.substr(7, 2));  // 길이
     string relocation = line.substr(9,3); // 재배치 비트
-    vector<char> relocBits;
+    string objcode = line.substr(12); // object code 부분
 
+    vector<char> relocBits;
     for (char r : relocation) {
         string rStr = hexstrToBin(r);
         for (char c : rStr) {
-            relocBits.insert(relocBits.end(), 3, c);
+            relocBits.push_back(c);
         }
     }
 
-    int relocCounter = 0;
-    int idx = 12; // object code 시작 지점
-    while (idx < (12 + len * 2)) { // 앞의 12자리 고정, 뒤의 len * 2가 실제 object code 길이(두 글자가 한 바이트)
-        unsigned char byte = (unsigned char)hexstrToHex(line.substr(idx, 2));
+    size_t index = 0; // 라인마다 각 명령어 시작 위치
+    size_t wordCount = 0; // 재배치 비트 인덱스 (워드 단위)
 
-        if (relocBits[relocCounter] == '1') {
-            memory.mem[pos + memory.realStart] = byte;
-            pos++;
-            relocCounter++;
+    while (index + 6 <= objcode.length()) { // 워드 6문자씩 처리
+        size_t word = hexstrToHex(objcode.substr(index,6));
+
+        // 재배치 적용
+        if (wordCount < relocBits.size() && relocBits[wordCount] == '1') {
+            word += offset;
         }
-        else {
-            memory.mem[pos++] = byte;
-        }
-        idx += 2;
+
+        // 3바이트씩 메모리에 저장 (상위 -> 중간 -> 하위)
+        memory.mem[address++] = (word >> 16) & 0xFF;
+        memory.mem[address++] = (word >> 8) & 0xFF;
+        memory.mem[address++] = word & 0xFF;
+
+        index += 6;
+        wordCount++;
+    }
+
+    // 남은 바이트 처리 (워드 3바이트 미만)
+    while (index + 2 <= objcode.length()) {
+        unsigned char c = (unsigned char)hexstrToHex(objcode.substr(index,2));
+        memory.mem[address++] = c;
+        index += 2;
     }
 }
 
@@ -172,7 +190,7 @@ void printMemory(Memory &memory) {
 
 int main() {
     Memory memory;
-    memory.logicalStart = 0;
+    memory.programStart = 0;
     string file;
     string inputStart;
     
@@ -181,7 +199,7 @@ int main() {
 
     cout << "프로그램 시작 주소 입력: ";
     cin >> inputStart;
-    memory.realStart = hexstrToHex(inputStart);
+    memory.loadAddress = hexstrToHex(inputStart);
 
     fileRead(file, memory);
 
