@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 #include <bitset>
+#include <cstdlib>
+#include <ctime>
 using namespace std;
 
 // 문자열 앞뒤 공백 제거
@@ -60,7 +62,6 @@ struct Memory {
  * 3. T 레코드 - 6자리, 2자리, 3자리, 이후 2자리씩
  * 4. 마지막 레코드는 E 레코드
  */
-
  void HParse(string record, Memory &memory);
  void TParse(string record, Memory &memory);
  void EParse(string record, Memory &memory);
@@ -102,6 +103,14 @@ void HParse(string record, Memory &memory) {
     memory.programStart = hexstrToHex(hRecord[1].substr(0, 6));
     memory.programLength = hexstrToHex(hRecord[1].substr(6, 6));
 
+    // 랜덤한 프로그램 로드 주소
+    srand((unsigned int)time(NULL));
+    size_t tmp = rand() % sizeof(memory.mem);
+    while (tmp + memory.programLength > sizeof(memory.mem)) {
+        tmp = rand() % sizeof(memory.mem);
+    }
+    memory.loadAddress = tmp;
+    
     if (32758 - memory.loadAddress < memory.programLength) {
         cout << "out of range" << endl;
         return;
@@ -186,6 +195,8 @@ void printMemory(Memory &memory) {
              << hex << setw(2) << setfill('0') 
              << (int)(unsigned char)memory.mem[i] << " ";
     }
+
+    cout << "\n프로그램 로드 주소: " << memory.loadAddress << endl;
 }
 
 int main() {
@@ -196,10 +207,6 @@ int main() {
     
     cout << "objfile 이름 입력: ";
     getline(cin, file);
-
-    cout << "프로그램 시작 주소 입력: ";
-    cin >> inputStart;
-    memory.loadAddress = hexstrToHex(inputStart);
 
     fileRead(file, memory);
 
