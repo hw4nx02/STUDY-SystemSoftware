@@ -1,6 +1,8 @@
 settings.json
 test.cpp
 test.exe
+*_test.exe
+Memory state.txt
 
 # Created by https://www.toptal.com/developers/gitignore/api/c++
 # Edit at https://www.toptal.com/developers/gitignore?templates=c++
