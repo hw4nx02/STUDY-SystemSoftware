@@ -260,6 +260,7 @@ void printMemory(Memory &memory) {
              << hex << setw(2) << setfill('0') 
              << (int)(unsigned char)memory.readByte(i) << " ";
     }
+    cout << endl;
 }
 
 int main() {

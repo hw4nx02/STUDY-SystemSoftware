@@ -70,7 +70,10 @@ struct Memory {
  */
 void fileRead(string name, Memory &memory) {
     ifstream file(name);
-    if (!file.is_open()) return;
+    if (!file.is_open()) {
+        cout << "cannot find object file" << endl;
+        return;
+    }
 
     string record;
     while (getline(file, record)) {
